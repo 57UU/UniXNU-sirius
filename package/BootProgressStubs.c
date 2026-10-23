@@ -174,6 +174,6 @@ __attribute__((weak)) uint64_t armcpu_map_physical(uint64_t physical, uint64_t l
 // archive, and the deadline counters of the fajita ArmCpu override, stay zero as well.
 __attribute__((weak)) volatile uint32_t native_legacy_rej_options[3];
 __attribute__((weak)) volatile uint32_t native_legacy_rej_rects[2][4];
-__attribute__((weak)) volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[12];
 __attribute__((weak)) volatile uint32_t native_touch_loop_step;
 __attribute__((weak)) volatile uint64_t armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
+__attribute__((weak)) volatile int native_touch_ids[12];
