@@ -1,0 +1,22 @@
+# Kernel configuration of the sirius image. CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
+#
+# The first-console configuration: the generic parts of the fajita set. ArmDTPlatform (the
+# device-tree platform expert) and ArmCpu (the CPU/GIC/timer driver) drive the board through
+# the ADT of scripts/make-sirius-adt.py. No storage, display or PMGR components yet: XNU is
+# expected to reach the video console and stop at the root device (or the AMFI No-PMGR panic).
+
+CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+CONFIG_XNU_EXTRA_LD_ARCHIVES=""
+CONFIG_XNU_NATIVE_UFS=n
+CONFIG_XNU_NATIVE_AES=n
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
+CONFIG_XNU_NATIVE_RAM_BLOCK=n
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
+CONFIG_XNU_ARMVIRT_PLATFORM=n

@@ -1,0 +1,117 @@
+name: kernel
+
+# The XNU kernel and the prelinked image of this board. The kernel step needs macOS + Xcode
+# (xcrun clang/ar with the iphoneos SDK); everything else (package, DarwinBoot, payload)
+# builds on Linux against the same UniXNU checkout.
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_ref:
+        description: Device repository ref (defaults to the ref of this run)
+        required: false
+        default: ""
+      unixnu_ref:
+        description: UniXNU ref to build with
+        required: false
+        default: "main"
+      steps:
+        description: Steps to build
+        type: choice
+        options:
+          - kernel
+          - kernel payload
+        default: "kernel"
+  push:
+    branches: [main]
+    paths:
+      - "configs/**"
+      - "board.toml"
+      - "scripts/**"
+      - ".github/workflows/kernel.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      UNIXNU_DEVICE: ${{ github.workspace }}/device
+    steps:
+      - name: Check out UniXNU
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref || 'main' }}
+          path: unixnu
+          persist-credentials: false
+
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.device_ref || github.ref }}
+          path: device
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install host tools
+        run: |
+          brew install llvm lld mtools dtc
+          if ! command -v unifdef >/dev/null; then
+            brew install unifdef
+            echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Select the device
+        working-directory: unixnu
+        run: |
+          ./unixnu defconfig sirius_defconfig
+          python3 - <<'PY'
+          import tomllib
+          board = tomllib.load(open('device/board.toml', 'rb'))
+          print(f'board: {board["board"]["name"]}')
+          PY
+
+      - name: Build kernel
+        working-directory: unixnu
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu build kernel
+
+      - name: Build payload
+        working-directory: unixnu
+        if: contains(inputs.steps || 'kernel', 'payload') || contains(github.event.head_commit.message, 'payload')
+        run: ./unixnu build payload
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          board=sirius
+          cp unixnu/out/$board/kernel/kernel.macho artifacts/ 2>/dev/null || true
+          cp unixnu/out/$board/kernel/kernel.macho.json artifacts/ 2>/dev/null || true
+          cp unixnu/out/$board/payload/payload.img artifacts/ 2>/dev/null || true
+          cp unixnu/out/$board/payload/payload.json artifacts/ 2>/dev/null || true
+          ls -lh artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirius-${{ inputs.steps || 'kernel' }}-${{ github.run_number }}
+          path: artifacts/*
+          retention-days: 3
+          if-no-files-found: error

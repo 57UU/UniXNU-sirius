@@ -1,0 +1,113 @@
+# Board description of the Xiaomi Mi 8 SE (sirius, SDM710), read by the unixnu build driver.
+#
+# Bring-up stage: first kernel boot. The firmware is the device's own U-Boot (sirius-distro,
+# U-Boot 2026.07 with EFI_LOADER, GOP via vidconsole, FAT block volumes): UniXNU.efi is loaded
+# from a FAT partition by U-Boot, DarwinBoot.efi travels in the payload volume as a [[driver]]
+# file, and XNU is expected to reach the video console.
+
+[board]
+name = "sirius"
+soc = "SDM710"
+description = "Xiaomi Mi 8 SE"
+kit = "sirius"
+
+# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, the same target as
+# fajita/sheng. SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication,
+# so it runs arm64 userlands only. The 21H461 kernelcache matches the XNU 23.6.0 source of
+# feeds.toml and the prelink roots below are known to prelink with it.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
+
+# The kernel step (macOS + Xcode, e.g. the GitHub Actions macos-26 runner): the generic
+# first-console configuration. The native drivers come from the UniXNU driver submodules;
+# build-arm-driver.py compiles them against the recorded XNU ABI.
+[kernel]
+defconfig = "sirius_defconfig"
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-libpthread-kernel.py",
+]
+
+# The kernel, slide and roots are the fajita values: the same 21H461 kernelcache.
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+slide = "-0x1000000"
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
+# No Mu-Silicium firmware: the device's U-Boot (sirius-distro) is the UEFI implementation.
+# UniXNU.efi is built on the host ("unixnu build package") and placed as
+# \EFI\BOOT\BOOTAA64.EFI on the payload volume; DarwinBoot.efi rides in the payload volume
+# and the generated unixnu.toml references it as a [[driver]] (loader != "firmware" below).
+
+# The payload volume: flashed to the vendor partition (mmcblk0p80, 3 GiB) as a FAT32 image and
+# read by U-Boot (and, through U-Boot's EFI block volumes, by UniXNU). dram_size is the
+# observed usable DRAM of the 6 GiB model: 2 GiB at 0x80000000 plus 0xfd6c0000 at 0x100000000.
+[payload]
+volume = "SIRIUSESP"
+size_mib = 256
+loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]] Payloads/DarwinBoot.efi
+title = "sirius first boot: XNU to console"
+dram_size = "0x17d6c0000"
+# The entry probe: a blue band at kernel entry, a magenta band before the MMU is enabled, and
+# panic() drawn on the screen (scripts/patch-xnu-entry-probe.py --panic-screen --no-reset).
+panic_screen = true
+kernel_args = [
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "ml-timeout-lock-panic-scale=40",
+  "-no_slto_panic",
+]
+
+[payload.adt]
+tool = "scripts/make-sirius-adt.py"
+# The iPad identity (model iPad7,1, target-type J120): libMobileGestalt prefix-matches
+# hw.product against iPhone/iPod/iPad.
+ipad_identity = true
+chip_id = "207"
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
+psci_method = "smc"
