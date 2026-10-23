@@ -25,11 +25,11 @@ No `unixnu build firmware` and no boot image: the payload FAT volume is flashed 
 
 | Stage | State |
 | --- | --- |
-| Stage 1: UEFI (U-Boot) | working (sirius-distro) |
-| Stage 3: payload volume | in progress |
-| Stage 4: XNU entry | pending |
-| Stage 5: platform expert | pending |
-| Stage 6: console | pending |
+| Stage 1: UEFI (U-Boot) | working (sirius-distro, `fastboot flash boot` + the marker-file boot) |
+| Stage 3: payload volume | working (p80 vendor FAT, `fastboot flash vendor`) |
+| Stage 4: XNU entry | working (green/blue/magenta entry-probe bands on hardware) |
+| Stage 5: platform expert | working (MMU on, 19.2 MHz timer, PSCI reset proven by the stage-3 reset loop) |
+| Stage 6: console | in progress (bisected to check_for_panic_log; fixed by XNU_DT_PANIC_REGION) |
 
 ## Layout
 

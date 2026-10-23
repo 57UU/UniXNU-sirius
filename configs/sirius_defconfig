@@ -10,6 +10,10 @@ CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
+# The boot progress display (kits/sirius, Font.h vendored): draws the kernel console lines
+# on the frame buffer in a readable font. This board overrides build-xnu-4k-baseline.sh to
+# drop the UFS/owner-root requirement of the upstream interlock (eMMC board).
+CONFIG_XNU_BOOT_PROGRESS=y
 # The BCM2837 machine config hardcodes a Raspberry Pi panic-log address; with this flag the
 # panic region comes from the device tree instead (absent here, which skips it safely).
 CONFIG_XNU_DT_PANIC_REGION=y
