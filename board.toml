@@ -109,6 +109,7 @@ tool = "scripts/make-sirius-adt.py"
 # The iPad identity (model iPad7,1, target-type J120): libMobileGestalt prefix-matches
 # hw.product against iPhone/iPod/iPad.
 ipad_identity = true
-chip_id = "207"
+# chip_id/unique_chip_id (the IOPlatformUUID seeds) come with the userland stages; the ADT
+# tool requires them as a pair, and the first boot needs neither.
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"
