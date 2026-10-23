@@ -28,6 +28,9 @@ on:
       - "configs/**"
       - "board.toml"
       - "scripts/**"
+      - "package/**"
+      - "kits/**"
+      - "patches/**"
       - ".github/workflows/kernel.yml"
 
 permissions:

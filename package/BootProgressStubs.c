@@ -160,3 +160,12 @@ __attribute__((weak)) volatile int native_owner_root_accepted;
 __attribute__((weak)) volatile uint32_t native_data_persist_gpt, native_data_persist_gpt_after, native_data_persist_header, native_data_persist_state;
 __attribute__((weak)) volatile uint64_t native_data_persist_errors, native_data_persist_first_lba, native_data_persist_loaded, native_data_persist_pages, native_data_persist_present, native_data_persist_syncs, native_data_persist_writes, native_data_writeback_flushes;
 __attribute__((weak)) char *debug_buf_base;
+
+// sirius: the fajita ArmCpu override carries wdog/scm/imem diagnostics the upstream driver
+// does not have; the main-repo ArmCpu runs this board, so the extra telemetry reads zero.
+__attribute__((weak)) volatile uint32_t armcpu_wdog[6], armcpu_imem[4];
+__attribute__((weak)) volatile int64_t armcpu_scm[8];
+__attribute__((weak)) volatile uint64_t armcpu_wdog_live[14], armcpu_wdog_pets;
+__attribute__((weak)) volatile uint32_t native_ram_block_sparse;
+__attribute__((weak)) void armcpu_wdog_sample(void) {   }
+__attribute__((weak)) uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) { (void)physical; (void)length; return 0; }
