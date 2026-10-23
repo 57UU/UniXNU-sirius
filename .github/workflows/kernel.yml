@@ -82,8 +82,8 @@ jobs:
         run: |
           ./unixnu defconfig sirius_defconfig
           python3 - <<'PY'
-          import tomllib
-          board = tomllib.load(open('device/board.toml', 'rb'))
+          import os, tomllib
+          board = tomllib.load(open(os.path.join(os.environ['UNIXNU_DEVICE'], 'board.toml'), 'rb'))
           print(f'board: {board["board"]["name"]}')
           PY
 
