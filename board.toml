@@ -36,6 +36,7 @@ archives = [
   "build-arm-driver.py ArmDTPlatform",
   "build-arm-driver.py ArmCpu",
   "build-libpthread-kernel.py",
+  "build-sirius-probes.py",           # the dormant probe stubs (LegacyDisplayProbe.cpp of the kit)
 ]
 
 # The kernel, slide and roots are the fajita values: the same 21H461 kernelcache.

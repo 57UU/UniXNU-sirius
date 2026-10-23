@@ -12,7 +12,10 @@ CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
-CONFIG_XNU_EXTRA_LD_ARCHIVES=""
+# The DEVELOPMENT kernel references native_legacy_display_probe() unconditionally
+# (offline-component-load-probes.patch); the dormant stub archive of
+# scripts/build-sirius-probes.py keeps the link closed (kits/sirius/LegacyDisplayProbe.cpp).
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sirius-probes/libSiriusProbes.a"
 CONFIG_XNU_NATIVE_UFS=n
 CONFIG_XNU_NATIVE_AES=n
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
