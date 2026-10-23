@@ -25,11 +25,15 @@ import subprocess
 import sys
 
 
-def mcopy(image, *args):
+def run_mtool(argv, check=True):
+    """Run an mtools command with no controlling terminal: mtools opens /dev/tty for its
+    prompts, and a background caller without a console gets stopped by SIGTTIN/SIGTTOU."""
     env = dict(os.environ, MTOOLS_SKIP_CHECK='1')
-    result = subprocess.run(['mcopy', '-i', str(image), *args], env=env)
-    if result.returncode:
-        raise SystemExit(f'mcopy {" ".join(args)} failed')
+    result = subprocess.run(['setsid'] + argv, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if check and result.returncode:
+        raise SystemExit(f'{" ".join(argv)} failed: {result.stdout}')
+    return result
 
 
 def main():
@@ -37,6 +41,7 @@ def main():
     parser.add_argument('--payload', type=Path, required=True, help='the payload.img of "unixnu build payload"')
     parser.add_argument('--unixnu-efi', type=Path, required=True, help='UniXNU.efi (package/build.sh output)')
     parser.add_argument('--darwinboot-efi', type=Path, required=True, help='DarwinBoot.efi (scripts/build-darwinboot.sh output)')
+    parser.add_argument('--marker', action='store_true', help='also write the BOOTUNIXNU marker that selects the UniXNU boot')
     parser.add_argument('--output', type=Path, default=None, help='copy the finished image here')
     args = parser.parse_args()
 
@@ -45,16 +50,23 @@ def main():
             raise SystemExit(f'{path} not found')
 
     image = args.payload
-    mcopy(image, '-s', '-Q', '-m', str(args.unixnu_efi), '::/EFI/BOOT/BOOTAA64.EFI')
-    mcopy(image, '-s', '-Q', '-m', str(args.darwinboot_efi), '::/EFI/UniXNU/Payloads/DarwinBoot.efi')
+    stage = image.parent / 'uboot-stage'
+    shutil.rmtree(stage, ignore_errors=True)
+    (stage / 'EFI/BOOT').mkdir(parents=True)
+    (stage / 'EFI/UniXNU/Payloads').mkdir(parents=True)
+    shutil.copyfile(args.unixnu_efi, stage / 'EFI/BOOT/BOOTAA64.EFI')
+    shutil.copyfile(args.darwinboot_efi, stage / 'EFI/UniXNU/Payloads/DarwinBoot.efi')
+    if args.marker:
+        (stage / 'EFI/UniXNU/BOOTUNIXNU').touch()
+    run_mtool(['mcopy', '-i', str(image), '-s', '-o', '-Q', '-m', str(stage / 'EFI'), '::/'])
+    shutil.rmtree(stage)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(image, args.output)
         image = args.output
 
-    listing = subprocess.run(['mdir', '-i', str(image), '-/', '::'], capture_output=True, text=True,
-                             env=dict(os.environ, MTOOLS_SKIP_CHECK='1'))
+    listing = run_mtool(['mdir', '-i', str(image), '-/', '::'], check=False)
     print(listing.stdout)
     print(f'U-Boot payload volume ready: {image} ({image.stat().st_size >> 20} MiB)')
     print('Flash to the vendor partition and select it from the U-Boot menu:')
