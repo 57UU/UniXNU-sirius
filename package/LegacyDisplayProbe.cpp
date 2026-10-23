@@ -11,5 +11,5 @@ volatile unsigned int native_legacy_display_probe_calls;
 extern "C" void
 native_legacy_display_probe (void)
 {
-	native_legacy_display_probe_calls++;
+	native_legacy_display_probe_calls = native_legacy_display_probe_calls + 1;
 }
