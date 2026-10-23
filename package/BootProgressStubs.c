@@ -141,3 +141,14 @@ __attribute__((weak)) char native_touch_xs[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_touch_ys[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_wifi_stats[4096] __attribute__((aligned(16)));
 __attribute__((weak)) void sheng_cpufreq_poll(void) {   }
+
+// sirius: the UFS/Virtio storage counters and the fajita-pcpu scheduler masks are not linked
+// on this eMMC board. Weak zero definitions: the storage line reads zero and no steering
+// happens; a real definition, once linked, takes precedence.
+__attribute__((weak)) volatile uint64_t native_ufs_block_reads, native_ufs_verified_blocks, native_ufs_verify_ticks, native_ufs_read_ticks, native_ufs_block_failures;
+__attribute__((weak)) volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published, native_ufs_probe_calls, native_ufs_matched, native_ufs_root_step;
+__attribute__((weak)) const char *volatile native_ufs_root_failure;
+__attribute__((weak)) volatile uint32_t native_virtio_ready, native_virtio_read_requests, native_virtio_read_failures;
+__attribute__((weak)) volatile uint64_t native_virtio_verified_blocks;
+__attribute__((weak)) void native_ufs_progress_text(char *out, size_t n) { if (n) { out[0] = 0; } }
+__attribute__((weak)) uint64_t sched_pcpu_mask, sched_rcpu_mask;
