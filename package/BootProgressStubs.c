@@ -152,3 +152,11 @@ __attribute__((weak)) volatile uint32_t native_virtio_ready, native_virtio_read_
 __attribute__((weak)) volatile uint64_t native_virtio_verified_blocks;
 __attribute__((weak)) void native_ufs_progress_text(char *out, size_t n) { if (n) { out[0] = 0; } }
 __attribute__((weak)) uint64_t sched_pcpu_mask, sched_rcpu_mask;
+
+// sirius: the counters fajita satisfies from NativeRamBlock, the verified-root probe and the
+// sheng data-persist code are not linked here either. Same weak-zero rule.
+__attribute__((weak)) volatile uint64_t native_ram_block_bytes, native_ram_block_resident_bytes;
+__attribute__((weak)) volatile int native_owner_root_accepted;
+__attribute__((weak)) volatile uint32_t native_data_persist_gpt, native_data_persist_gpt_after, native_data_persist_header, native_data_persist_state;
+__attribute__((weak)) volatile uint64_t native_data_persist_errors, native_data_persist_first_lba, native_data_persist_loaded, native_data_persist_pages, native_data_persist_present, native_data_persist_syncs, native_data_persist_writes, native_data_writeback_flushes;
+__attribute__((weak)) char *debug_buf_base;
