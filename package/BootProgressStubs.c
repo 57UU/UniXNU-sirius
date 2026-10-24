@@ -177,3 +177,9 @@ __attribute__((weak)) volatile uint32_t native_legacy_rej_rects[2][4];
 __attribute__((weak)) volatile uint32_t native_touch_loop_step;
 __attribute__((weak)) volatile uint64_t armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
 __attribute__((weak)) volatile int native_touch_ids[12];
+
+// sirius: the TOPO panel row reads the ArmCpu probe counters, which only exist in the
+// instrumented driver override. Without the override (its object shifts the kernel layout)
+// they read zero and the PROBE row is inert.
+__attribute__((weak)) volatile uint32_t armcpu_probe_calls, armcpu_probe_declined_type, armcpu_probe_declined_number, armcpu_probe_accepted;
+__attribute__((weak)) volatile uint32_t armcpu_probe_last_reg, armcpu_probe_last_type_len, armcpu_probe_last_reg_len;
