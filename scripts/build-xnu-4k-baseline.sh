@@ -42,16 +42,18 @@ for LATE_PATCH in "$ROOT/patches/xnu/zzz-boot-progress.patch" "$ROOT/patches/xnu
   fi
 done
 for PATCH in "$ROOT"/patches/xnu/*.patch "$ROOT"/kits/NativePrelink/patches/*.patch; do
+  [ -e "$PATCH" ] || continue
   if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
     git -C .cache/xnu-work apply --check "$PATCH"
     git -C .cache/xnu-work apply "$PATCH"
   fi
 done
-# Linux-host portability patches (patches/xnu-linux/ of the device repository). The CI
-# (macOS) checkout has no such directory: git does not track empty directories, so the
-# glob stays literal and the loop is skipped there.
+# Linux-host portability patches (patches/xnu-linux/ of the device repository). They are
+# applied only on a Linux host: linux-host-tools.patch rewrites the SETUP host-tool rules
+# in ways the macOS CI cannot build.
 for PATCH in "$ROOT"/patches/xnu-linux/*.patch; do
   [ -e "$PATCH" ] || continue
+  [ "$(uname -s)" = "Linux" ] || continue
   if ! git -C .cache/xnu-work apply --reverse --check "$PATCH" >/dev/null 2>&1; then
     git -C .cache/xnu-work apply --check "$PATCH"
     git -C .cache/xnu-work apply "$PATCH"
