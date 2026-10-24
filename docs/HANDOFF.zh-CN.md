@@ -38,10 +38,10 @@ ABL (boot 分区 = 我们重编的 U-Boot boot.img)
 | S4 内核入口 | ✅ | 绿/蓝/品红探针色带 |
 | S5 MMU/定时器/PSCI | ✅ | stage-3 复位循环（20s 定时 + PSCI 复位） |
 | S6 控制台 | ✅ | boot-progress 面板：内核日志 + NVRAM 代理 + 19.2MHz 时基全通 |
-| S7 IOKit | 🔶 进行中 | GIC 预配置后越过 lockdown 进入 kext 启动；修复 AppleARMCPU 抢占（sheng-smp=1）已部署待验证 |
+| S7 IOKit | 🔶 进行中 | GIC 预配置后越过 lockdown 进入 kext 启动；AppleARMCPU 抢占 /cpus nub 的根因定位中（TOPO 诊断面板已部署） |
 | S8 root device | ⏳ | 无存储驱动（eMMC 机型，无 UFS）；预期停在 root 等待/panic |
 
-**最新部署**：`sheng-smp=1 cpus=8 armcpu-self-ipi=1` 参数版（SMP 参数修复），等待真机验证结果。
+**最新部署**：TOPO 诊断版（无 ArmCpu 覆盖 + 面板 TOPO 行）。`sheng-smp=1` 参数没有防住抢占 —— 证据是面板 GIC stride=0 / SMP req=0（ArmCpu::start 从未运行），而 probe 逻辑与 fajita 相同；带 probe 计数器的 ArmCpu 覆盖版内核会**破坏内核**（死在面板之前，疑为对象布局平移），已回退。TOPO 行读取内核拓扑（ml_get_cpu_number × 8 个 MPIDR + ArmDTPlatform 计数器），数据到手后走 DarwinBoot 层验证 ADT/nub 属性。
 
 ## 3. 构建-部署-测试循环
 
@@ -52,8 +52,22 @@ cd ~/Xnu4Sirius/UniXNU-sirius
 git add -A && git commit && git push          # push 到 main 自动触发（注意 paths 过滤器）
 # 若 paths 不覆盖（如 package/ 之外的杂项）手动触发：
 gh workflow run kernel.yml --ref main -f steps=kernel
-# 等待 ~8-20 分钟，下载产物：
+# 等待 ~8 分钟，下载产物：
 gh run download <run-id> -D ~/Xnu4Sirius/kernel-artifact/tmp -n sirius-kernel-<N>
+```
+
+⚠️ gh run download 在本网络下经常 connection reset / 卡死。可靠方法（走 Windows 宿主代理，WSL 里宿主机 = 网关 172.23.0.1）：
+
+```bash
+export https_proxy=http://172.23.0.1:7900 http_proxy=http://172.23.0.1:7900
+TOKEN=$(gh auth token)
+# 1) 取 artifact id
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://api.github.com/repos/57UU/UniXNU-sirius/actions/runs/<RUN>/artifacts"
+# 2) 拿 302 的 Location（blob storage）
+curl -s -I -H "Authorization: Bearer $TOKEN" \
+  "https://api.github.com/repos/57UU/UniXNU-sirius/actions/artifacts/<ID>/zip"
+# 3) wget Location（必须走代理），解压用 python3 -m zipfile（无 unzip）
 ```
 
 ⚠️ workflow 的 concurrency 是 `cancel-in-progress: true` —— 构建期间**不要 push**，会取消正在跑的构建（发生过两次事故）。
@@ -118,6 +132,9 @@ fastboot.exe reboot
 7. **GIC-500 预配置（本移植原创）**：XNU Apple 版期待 iBoot 配好的中断控制器；U-Boot 不配置 → 内核停在 lockdown、IRQ=0。`drivers/DarwinBoot`（设备覆盖版）在 ExitBootServices 前按 `/arm-io/intc` 解析 DT 并镜像 ArmCpu 的 initDistributor/wakeRedistributor/enableGic 序列（含 MPIDR 匹配 redistributor、PPI 27 = 虚拟定时器）。验证：内核越过 lockdown 进入 IOKit。
 8. **AppleARMCPU 抢占**：无 `sheng-smp=1` 时 ArmCpu::probe 拒绝次级核 nub → kernelcache 里的 AppleARMCPU（IONameMatch=cpu, score 100）接管 → 因缺少 Apple 专有 cpu 属性 panic "CPU configuration in device tree is invalid"。修复：boot args 加 `sheng-smp=1 cpus=8 armcpu-self-ipi=1`（fajita 同款）。
 9. **真实 iPad7,1 DT 提取**（`~/Xnu4Sirius/adt-dump.py` + `/tmp/j120.adt`）：IM4P→LZFSE（`~/.local/xnu-linux/bin/lzfse`）→ ADT 解析。注意属性 length 高位是 syscfg 引用标志（`& 0x7fffffff`）。真实 /cpus 属性清单可用于后续补属性。
+10. **设备仓 `patches/xnu/` 会整体遮蔽主仓补丁目录**：feeds.py 用 setdefault，同名 patch 模块先到先得（设备仓先注册）。设备仓一旦有 `patches/xnu/`，主仓 57 个常规内核补丁全部失效（SETUP 阶段即崩，hostcompat.h 找不到）。Linux 专用补丁放 **`patches/xnu-linux/`**（独立模块名，不遮蔽），由设备仓覆盖版 `scripts/build-xnu-4k-baseline.sh` 在常规序列之后应用，且带 `uname = Linux` 守卫（linux-host-tools.patch 会重写 SETUP 主机工具规则，在 macOS CI 上无法编译 hostcompat.h，绝不能进 CI）。
+11. **诊断内核教训**：给内核链入的对象（ArmCpu 覆盖）加哪怕几十字节的计数器，都会平移整个内核布局并使启动死在 boot-progress 面板之前（同一 DarwinBoot 下，未覆盖版能到面板）。诊断优先走 payload 层（ADT/boot args/DarwinBoot 打印）或 BootProgress 面板行（弱定义符号，不改驱动对象）。
+12. **workflow paths 过滤器**已含 drivers/**（踩了三次坑：drivers/ 或 package/ 的改动 push 后 CI 无反应）；concurrency cancel-in-progress 在构建期间 push 会取消正在跑的构建。
 
 ## 5. 下一步路线（按优先级）
 
@@ -127,7 +144,7 @@ fastboot.exe reboot
 4. **触摸**：sirius 触摸 IC 是 SYNAPTICS S3706（主线 DTS `synaptics,s3706`，GENI I2C @0xa94000?）—— 参考 fajita 的 S3706B 驱动（NativeRmi4Touch + NativeGeniI2c，fajita 仓库有完整实现与测试）。
 5. **存储（eMMC！）**：本机是 eMMC（sdhci-msm，主线 DTS `sdhc_1: mmc@7c4000`? —— sdm670 是 `mmc@7c4000`? 查 `sdm670.dtsi`）。NativeUfs 不适用。需要新驱动（NativeSdhci，参考 drivers/NativeUfs 的结构 + 主线 `drivers/mmc/host/sdhci-msm.c`），或先用 NativeRamBlock 做 RAM Data 卷跑通用户态（fajita 路线）。
 6. **用户态**：trust cache、data seed、`unique_chip_id`（board.toml [payload.adt] 需成对加 chip_id/unique_chip_id）、IPSW OS 卷、launchd…
-7. **本地内核编译**：`~/Xnu4Sirius/xnu-linux-toolchain`（Allenwdk，README 实测 205s 冷构建）。WSL bootstrap 剩 unifdef（gcc-15 C23 constexpr 语法，`CC=clang` 重编或 pin 旧 tag 可解）和 firehose 私有头（见其 README 缺口 #3）。通了之后迭代不再依赖 CI。工具链详情与坑见 `docs/linux-kernel-build.md`。
+7. **本地内核编译（工具链已全通，首跑进行中）**：`~/Xnu4Sirius/xnu-linux-toolchain`（Allenwdk）。bootstrap 全部完成，途中三个坑：unifdef 需 `CC=clang`（gcc-15 的 C23 constexpr 关键字撞了 unifdef 的变量名）；tcsh 链接需 `make LIBES='-lcrypt -lncursesw -ltinfo'`（先 `apt install libcrypt-dev`）；cctools-port 一次过（其 ld64 需要 libdispatch —— 从 swift-corelibs-libdispatch swift-5.10-RELEASE 源码用 clang 构建，Ubuntu 无包）。用法：`source env.sh && ./unixnu build kernel`（Linux 补丁由设备仓 baseline 覆盖版自动应用）。两个运行环境要求：网络可达 GitHub API（prepare-xnu-source.py 拉 DriverKit 头，`export https_proxy=http://172.23.0.1:7900`）；**不要在 run_in_background 的管道 stdin 下跑**（migcom 偶发死锁读继承的永不写入的 stdin —— 前台跑或重试即可；bin/ 里 migcom/unifdef 已换成带 /tmp/shim-calls.log 记录的包装脚本）。预期剩余缺口：firehose 私有头（其 README 已知缺口 #3）。通了之后内核迭代不再依赖 CI。
 
 ## 6. 环境清单
 
