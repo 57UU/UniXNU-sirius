@@ -394,6 +394,8 @@ static void draw(unsigned now) {
       extern volatile unsigned armdt_platform_device_count, armdt_platform_bus_count, armdt_platform_nvram_proxy;
       extern volatile unsigned armcpu_probe_calls, armcpu_probe_declined_type, armcpu_probe_declined_number, armcpu_probe_accepted;
       extern volatile unsigned armcpu_probe_last_reg, armcpu_probe_last_type_len, armcpu_probe_last_reg_len;
+      extern volatile int armcpu_probe_last_number, armcpu_probe_boot_number;
+      extern volatile unsigned armcpu_probe_smp_arg;
       static const unsigned cpu_regs[8] = {0,0x100,0x200,0x300,0x400,0x500,0x600,0x700};
       // boot_progress_init() draws the first panel frame right after PE_init_platform, while
       // ml_parse_cpu_topology() runs later in arm_init. Until it does, topology_info.boot_cpu
@@ -409,12 +411,15 @@ static void draw(unsigned now) {
           n+=(int)snprintf(b+n,sizeof(b)-n,"|DT cfg=%u cpu=%u dev=%u bus=%u nv=%u",
             armdt_platform_configured,armdt_platform_cpu_count,armdt_platform_device_count,
             armdt_platform_bus_count,armdt_platform_nvram_proxy);
-        if(n>0)line(28,b,0xff66ffcc);
+        if(n>0)line(2,b,0xff66ffcc);
       }
-      int n=(int)snprintf(b,sizeof(b),"PROBE calls=%u acc=%u dtype=%u dnum=%u last reg=%x tlen=%u rlen=%u",
+      // Rows 2-3 stay above the panic screen's clear line (height/8), so the probe decision
+      // survives the AppleARMCPU panic that ends this boot.
+      int n=(int)snprintf(b,sizeof(b),"PROBE calls=%u acc=%u dtype=%u dnum=%u smp=%u num=%d boot=%d reg=%x tl=%u rl=%u",
         armcpu_probe_calls,armcpu_probe_accepted,armcpu_probe_declined_type,
-        armcpu_probe_declined_number,armcpu_probe_last_reg,armcpu_probe_last_type_len,armcpu_probe_last_reg_len);
-      if(n>0)line(29,b,0xff66ffcc);
+        armcpu_probe_declined_number,armcpu_probe_smp_arg,armcpu_probe_last_number,armcpu_probe_boot_number,
+        armcpu_probe_last_reg,armcpu_probe_last_type_len,armcpu_probe_last_reg_len);
+      if(n>0)line(3,b,0xff66ffcc);
     }
     if(&native_cpufreq_stage && native_cpufreq_stage>=2)line(39,native_cpufreq_row,0xff00ccff);
     {
