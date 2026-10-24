@@ -30,7 +30,7 @@ No `unixnu build firmware` and no boot image: the payload FAT volume is flashed 
 | Stage 4: XNU entry | working (green/blue/magenta entry-probe bands on hardware) |
 | Stage 5: platform expert | working (MMU on, 19.2 MHz timer, PSCI reset proven by the stage-3 reset loop) |
 | Stage 6: console | working (boot-progress panel: live kernel log, NVRAM proxy, memory map on hardware) |
-| Stage 7: IOKit | in progress (DarwinBoot pre-configures the GIC-500 — the iBoot role — and the boot got past lockdown into kext start; SMP-args fix for the AppleARMCPU takeover deployed, being verified) |
+| Stage 7: IOKit | in progress. The boot-progress TOPO row confirms the kernel topology (`boot=0 max=7 nums=01234567`). Native ArmCpu has not yet claimed the `/cpus` nubs: the kernelcache AppleARMCPU takes them and panics in its `_validateConfiguration()` (it requires `/cpus/max_cpus`). The SoC virtual timer is PPI 3 / INTID 19 (not Apple's 27); enabling it in DarwinBoot's early GIC pre-config makes the timer fire before ArmCpu installs its IRQ handler (pc=0 abort in `sleh_irq`), so the next step is to stop pre-enabling that PPI and re-read the probe row |
 | Stage 8: root device | pending (eMMC board: no storage driver yet; the expected first stop) |
 
 The full context, the build-deploy-test loop, the solved problems and the road map are in
@@ -51,7 +51,7 @@ The full context, the build-deploy-test loop, the solved problems and the road m
 | --- | --- |
 | DRAM | `0x80000000`, `0x17d6c0000` usable (6 GiB model: 2 GiB + 0xfd6c0000 at 0x100000000) |
 | GIC-500 | GICD `0x17a00000`/0x10000, GICR `0x17a60000`/0x100000 (stride 0x20000) |
-| Timer | 19.2 MHz (Qualcomm XO) |
+| Timer | 19.2 MHz (Qualcomm XO); EL1 virtual timer = GIC PPI 3 / INTID 19 (Apple uses PPI 11 / INTID 27) |
 | CPUs | 8x Kryo 360 at MPIDR 0x000-0x700; cpu0-5 = A55, cpu6-7 = A75; boot CPU cpu0 |
 | PSCI | smc |
 | Storage | eMMC (this unit); no native storage driver yet |
