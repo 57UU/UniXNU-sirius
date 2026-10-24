@@ -29,7 +29,12 @@ No `unixnu build firmware` and no boot image: the payload FAT volume is flashed 
 | Stage 3: payload volume | working (p80 vendor FAT, `fastboot flash vendor`) |
 | Stage 4: XNU entry | working (green/blue/magenta entry-probe bands on hardware) |
 | Stage 5: platform expert | working (MMU on, 19.2 MHz timer, PSCI reset proven by the stage-3 reset loop) |
-| Stage 6: console | in progress (bisected to check_for_panic_log; fixed by XNU_DT_PANIC_REGION) |
+| Stage 6: console | working (boot-progress panel: live kernel log, NVRAM proxy, memory map on hardware) |
+| Stage 7: IOKit | in progress (DarwinBoot pre-configures the GIC-500 — the iBoot role — and the boot got past lockdown into kext start; SMP-args fix for the AppleARMCPU takeover deployed, being verified) |
+| Stage 8: root device | pending (eMMC board: no storage driver yet; the expected first stop) |
+
+The full context, the build-deploy-test loop, the solved problems and the road map are in
+[docs/HANDOFF.zh-CN.md](docs/HANDOFF.zh-CN.md) (Chinese).
 
 ## Layout
 

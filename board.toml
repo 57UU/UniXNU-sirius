@@ -104,6 +104,9 @@ kernel_args = [
   "ml-timeout-lock-panic-scale=40",
   "-no_slto_panic",
   "boot-progress=2",                # draw the kernel console lines on the screen (the readable log)
+  "sheng-smp=1",                    # ArmCpu claims every /cpus nub: without it AppleARMCPU (kernelcache) takes the secondary nubs and panics on the non-Apple tree
+  "cpus=8",
+  "armcpu-self-ipi=1",
 ]
 
 [payload.adt]
