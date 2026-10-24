@@ -383,6 +383,32 @@ static void draw(unsigned now) {
         armcpu_gic_stride,armcpu_gic_typer_probe[0],armcpu_gic_typer_probe[1]);
       line(30,b,0xff00ff88);
     }
+    {
+      // sirius bring-up: why the native ArmCpu declines the /cpus nubs (AppleARMCPU panic).
+      // Kernel CPU topology view of the eight MPIDR affinities, the ArmDTPlatform nub counters,
+      // and the ArmCpu probe decision counters (the override in the device repository).
+      extern int ml_get_cpu_number (unsigned);
+      extern int ml_get_boot_cpu_number (void);
+      extern int ml_get_max_cpu_number (void);
+      extern volatile unsigned armdt_platform_configured, armdt_platform_cpu_count;
+      extern volatile unsigned armdt_platform_device_count, armdt_platform_bus_count, armdt_platform_nvram_proxy;
+      extern volatile unsigned armcpu_probe_calls, armcpu_probe_declined_type, armcpu_probe_declined_number, armcpu_probe_accepted;
+      extern volatile unsigned armcpu_probe_last_reg, armcpu_probe_last_type_len, armcpu_probe_last_reg_len;
+      static const unsigned cpu_regs[8] = {0,0x100,0x200,0x300,0x400,0x500,0x600,0x700};
+      int n = (int)snprintf(b,sizeof(b),"TOPO boot=%d max=%d nums=",
+        ml_get_boot_cpu_number(),ml_get_max_cpu_number());
+      for(unsigned c=0;n>0&&n<(int)sizeof(b)-12&&c<8;c++)
+        n+=(int)snprintf(b+n,sizeof(b)-n,"%d",ml_get_cpu_number(cpu_regs[c]));
+      if(n>0&&n<(int)sizeof(b)-12)
+        n+=(int)snprintf(b+n,sizeof(b)-n,"|DT cfg=%u cpu=%u dev=%u bus=%u nv=%u",
+          armdt_platform_configured,armdt_platform_cpu_count,armdt_platform_device_count,
+          armdt_platform_bus_count,armdt_platform_nvram_proxy);
+      if(n>0)line(28,b,0xff66ffcc);
+      n=(int)snprintf(b,sizeof(b),"PROBE calls=%u acc=%u dtype=%u dnum=%u last reg=%x tlen=%u rlen=%u",
+        armcpu_probe_calls,armcpu_probe_accepted,armcpu_probe_declined_type,
+        armcpu_probe_declined_number,armcpu_probe_last_reg,armcpu_probe_last_type_len,armcpu_probe_last_reg_len);
+      if(n>0)line(29,b,0xff66ffcc);
+    }
     if(&native_cpufreq_stage && native_cpufreq_stage>=2)line(39,native_cpufreq_row,0xff00ccff);
     {
       // The same raw counter delta converted two ways: with the device-tree timebase (what the kernel and user space use)
