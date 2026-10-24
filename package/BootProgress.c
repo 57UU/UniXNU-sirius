@@ -580,6 +580,13 @@ static void refresh(unsigned now) {
   __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
 
+// Draw one frame from a context that does not own the monitor timer. The panic screen calls this
+// before it clears the lower screen, so the TOPO/PROBE rows carry the state at panic time even
+// though the monitor thread is asleep on the (ArmCpu-owned) timer interrupt.
+void boot_progress_refresh_now(void) {
+  if (enabled) refresh(seconds());
+}
+
 int boot_progress_active(void) { return enabled != 0; }
 int boot_progress_pulse_anchor(uintptr_t base,uint64_t bytes,unsigned w,unsigned h,unsigned rb) {
   int accepted=enabled && bp_pulse_register(&pulse,base,bytes,w,h,rb);

@@ -86,8 +86,10 @@ public:
 
 OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
 
-// Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and PPI 27.
-static const uint32_t kSgiPpiEnable = 0xffffU | (1U << 27);
+// Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and the EL1 virtual timer PPI.
+// PPI 27 is the architectural (Apple) mapping; Qualcomm SDM670/710 wires the virtual timer to PPI 3 (INTID 19), passed by the board as armcpu-timer-intid=19.
+static uint32_t gTimerIntid = 27;
+#define kSgiPpiEnable (0xffffU | (1U << gTimerIntid))
 
 static const uint32_t kIpiSpiBase = 1008;   // INTIDs 1008..1015 stand for 'IPI to logical core 0..7'
 
@@ -395,6 +397,10 @@ bool ArmCpu::start (IOService *provider)
   unsigned diagnostic = 0;
   PE_parse_boot_argn("armcpu-diagnostics", &diagnostic, sizeof(diagnostic));
   diagnosePower=diagnostic==1;
+  unsigned timerIntid = 27;
+  if (PE_parse_boot_argn ("armcpu-timer-intid", &timerIntid, sizeof (timerIntid)) && timerIntid >= 16 && timerIntid < 32) {
+    gTimerIntid = timerIntid;
+  }
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   memcpy (&physical, reg->getBytesNoCopy (), sizeof (physical));
@@ -590,7 +596,7 @@ void ArmCpu::interrupt (void)
     armcpu_irq_id=static_cast<uint32_t>(id & 0xffffff);
     if ((id & 0xffffff) >= 1020) { armcpu_irq_phase=0;break; }
     if(diagnosePower && ++drained>128)panic("ArmCpu: IRQ drain exceeds 128 id=%llx timer=%llu IPI=%llu",id,armcpu_timer_interrupts,armcpu_ipi_interrupts);
-    if ((id & 0xffffff) == 27) {
+    if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
       armcpu_irq_phase=2;

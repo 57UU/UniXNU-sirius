@@ -222,6 +222,14 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   u32 row, col;
 
   __asm__ volatile ("msr daifset, #15");
+#ifdef REFRESH
+  /* The panel's monitor thread draws its first frame early and then sleeps on the timer that
+   * ArmCpu owns; redraw now so the TOPO/PROBE rows show the probe state at panic time. The rows
+   * sit above h/8, so the clear below leaves them readable. */
+  if (REFRESH) {
+    ((void (*)(void))(u64)REFRESH)();
+  }
+#endif
   g.base = (u8 *)v->v_baseaddr;
   g.rb   = v->v_rowbytes;
   g.w    = v->v_width;

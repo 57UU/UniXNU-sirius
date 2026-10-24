@@ -58,7 +58,11 @@ STATIC UINT64 U64 (CONST VOID *P) { return ReadUnaligned64 ((CONST UINT64 *)P); 
 // space 1:1, so the boot-services-time MMIO works directly.
 // ---------------------------------------------------------------------------
 
-#define GIC_SGI_PPI_ENABLE  (0xffffU | (1U << 27))   // SGIs 0..15 and PPI 27 (the virtual timer)
+// SGIs 0..15 and the EL1 virtual timer PPI. Qualcomm SDM670/710 wires the virtual timer to
+// GIC PPI 3 (INTID 19), not the architectural PPI 11 (INTID 27) of Apple SoCs; the /cpus
+// timebase and the kernel's armcpu-timer-intid=19 use the same mapping.
+#define GIC_TIMER_INTID     (19)
+#define GIC_SGI_PPI_ENABLE  (0xffffU | (1U << GIC_TIMER_INTID))
 
 STATIC
 UINT32

@@ -199,6 +199,14 @@ def assemble_c(source, va, workdir, symbols):
         if not any(base <= text and text + 256 <= base + size for base, size, _, _ in SEGMENTS):
             raise SystemExit('Invalid _boot_progress_panic_text')
         definitions.append(f'-DPANIC_TEXT={text:#x}UL')
+    # Optional: BootProgress.c boot_progress_refresh_now(). The panel's monitor thread sleeps on
+    # the ArmCpu timer, so without this the TOPO/PROBE rows would be the frame drawn before the
+    # CPU candidates were probed. The panic runs after every candidate's probe.
+    refresh = symbols.get('_boot_progress_refresh_now')
+    if refresh is not None:
+        if not any(base <= refresh < base + size for base, size, _, _ in SEGMENTS):
+            raise SystemExit('Invalid _boot_progress_refresh_now')
+        definitions.append(f'-DREFRESH={refresh:#x}UL')
     # fajita: the boot log's panic flush (package/BootLog.c), when linked, and the reset delay of --panic-reset.
     flush = symbols.get('_boot_log_panic_flush')
     if flush is not None and PANIC_RESET_SECONDS:

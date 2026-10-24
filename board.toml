@@ -107,6 +107,7 @@ kernel_args = [
   "sheng-smp=1",                    # ArmCpu claims every /cpus nub: without it AppleARMCPU (kernelcache) takes the secondary nubs and panics on the non-Apple tree
   "cpus=8",
   "armcpu-self-ipi=1",
+  "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
 ]
 
 [payload.adt]
