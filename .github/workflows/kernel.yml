@@ -31,6 +31,7 @@ on:
       - "package/**"
       - "kits/**"
       - "patches/**"
+      - "drivers/**"
       - ".github/workflows/kernel.yml"
 
 permissions:
