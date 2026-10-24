@@ -186,7 +186,7 @@ IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
   OSData *type = OSDynamicCast (OSData, provider->getProperty ("device_type"));
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   uint32_t id;
-  armcpu_probe_calls++;
+  armcpu_probe_calls = armcpu_probe_calls + 1;
   {
     unsigned smp = 0;
     PE_parse_boot_argn ("sheng-smp", &smp, sizeof (smp));
@@ -195,7 +195,7 @@ IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
   if ((type == nullptr) || (type->getLength () != 4) ||
       (memcmp (type->getBytesNoCopy (), "cpu", 4) != 0) ||
       (reg == nullptr) || (reg->getLength () < sizeof (id))) {
-    armcpu_probe_declined_type++;
+    armcpu_probe_declined_type = armcpu_probe_declined_type + 1;
     if (type != nullptr) { armcpu_probe_last_type_len = type->getLength (); }
     if (reg != nullptr) { armcpu_probe_last_reg_len = reg->getLength (); }
     return nullptr;
@@ -210,11 +210,11 @@ IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
     unsigned smp = 0;
     PE_parse_boot_argn ("sheng-smp", &smp, sizeof (smp));
     if (smp == 0 || ml_get_cpu_number (id) < 0 || ml_get_cpu_number (id) >= ARMCPU_SMP_SLOTS) {
-      armcpu_probe_declined_number++;
+      armcpu_probe_declined_number = armcpu_probe_declined_number + 1;
       return nullptr; // Secondary startup is opt-in (sheng-smp=1).
     }
   }
-  armcpu_probe_accepted++;
+  armcpu_probe_accepted = armcpu_probe_accepted + 1;
   return IOCPU::probe (provider, score);
 }
 
