@@ -38,10 +38,10 @@ ABL (boot 分区 = 我们重编的 U-Boot boot.img)
 | S4 内核入口 | ✅ | 绿/蓝/品红探针色带 |
 | S5 MMU/定时器/PSCI | ✅ | stage-3 复位循环（20s 定时 + PSCI 复位） |
 | S6 控制台 | ✅ | boot-progress 面板：内核日志 + NVRAM 代理 + 19.2MHz 时基全通 |
-| S7 IOKit | 🔶 进行中 | GIC 预配置后越过 lockdown 进入 kext 启动；AppleARMCPU 抢占 /cpus nub 的根因定位中（TOPO 诊断面板已部署） |
+| S7 IOKit | 🔶 进行中 | GIC 预配置后越过 lockdown 进入 kext 启动；AppleARMCPU 抢占 /cpus nub 的根因定位中（TOPO 面板的早期绘制崩溃已修复，等待拓扑数据） |
 | S8 root device | ⏳ | 无存储驱动（eMMC 机型，无 UFS）；预期停在 root 等待/panic |
 
-**最新部署**：TOPO 诊断版（无 ArmCpu 覆盖 + 面板 TOPO 行）。`sheng-smp=1` 参数没有防住抢占 —— 证据是面板 GIC stride=0 / SMP req=0（ArmCpu::start 从未运行），而 probe 逻辑与 fajita 相同；带 probe 计数器的 ArmCpu 覆盖版内核会**破坏内核**（死在面板之前，疑为对象布局平移），已回退。TOPO 行读取内核拓扑（ml_get_cpu_number × 8 个 MPIDR + ArmDTPlatform 计数器），数据到手后走 DarwinBoot 层验证 ADT/nub 属性。
+**最新部署（22:16）**：TOPO 行守卫修复版。前两版（带计数器的 ArmCpu 覆盖版与去掉覆盖只留 TOPO 行的版本）都死在面板之前，原因不是覆盖的对象布局平移，而是 TOPO 行本身：面板的第一次 `draw()` 发生在 `boot_progress_init()`（`arm_init` 里 `PE_init_platform` 之后），早于同一函数后面的 `ml_parse_cpu_topology()`，此时 `topology_info.boot_cpu` 仍是 NULL，`ml_get_boot_cpu_number()` 直接解引用它 —— 内核在面板绑定前 data abort，屏上只剩 DarwinBoot 绿条 + 蓝/品红入口探针。修复：TOPO 行用 `ml_get_topology_info()` 的 NULL 契约守卫（commit `ab3c9c0`），CI 产物已重新装入 payload 并刷入真机。`sheng-smp=1` 参数没有防住抢占 —— 证据是旧面板 GIC stride=0 / SMP req=0（ArmCpu::start 从未运行），而 probe 逻辑与 fajita 相同；等 TOPO 行显示 boot/max/nums 与 DT cfg 后，走 DarwinBoot 层验证 ADT/nub 属性。
 
 ## 3. 构建-部署-测试循环
 
@@ -133,12 +133,12 @@ fastboot.exe reboot
 8. **AppleARMCPU 抢占**：无 `sheng-smp=1` 时 ArmCpu::probe 拒绝次级核 nub → kernelcache 里的 AppleARMCPU（IONameMatch=cpu, score 100）接管 → 因缺少 Apple 专有 cpu 属性 panic "CPU configuration in device tree is invalid"。修复：boot args 加 `sheng-smp=1 cpus=8 armcpu-self-ipi=1`（fajita 同款）。
 9. **真实 iPad7,1 DT 提取**（`~/Xnu4Sirius/adt-dump.py` + `/tmp/j120.adt`）：IM4P→LZFSE（`~/.local/xnu-linux/bin/lzfse`）→ ADT 解析。注意属性 length 高位是 syscfg 引用标志（`& 0x7fffffff`）。真实 /cpus 属性清单可用于后续补属性。
 10. **设备仓 `patches/xnu/` 会整体遮蔽主仓补丁目录**：feeds.py 用 setdefault，同名 patch 模块先到先得（设备仓先注册）。设备仓一旦有 `patches/xnu/`，主仓 57 个常规内核补丁全部失效（SETUP 阶段即崩，hostcompat.h 找不到）。Linux 专用补丁放 **`patches/xnu-linux/`**（独立模块名，不遮蔽），由设备仓覆盖版 `scripts/build-xnu-4k-baseline.sh` 在常规序列之后应用，且带 `uname = Linux` 守卫（linux-host-tools.patch 会重写 SETUP 主机工具规则，在 macOS CI 上无法编译 hostcompat.h，绝不能进 CI）。
-11. **诊断内核教训**：给内核链入的对象（ArmCpu 覆盖）加哪怕几十字节的计数器，都会平移整个内核布局并使启动死在 boot-progress 面板之前（同一 DarwinBoot 下，未覆盖版能到面板）。诊断优先走 payload 层（ADT/boot args/DarwinBoot 打印）或 BootProgress 面板行（弱定义符号，不改驱动对象）。
+11. **诊断面板的早期绘制约束**：`boot_progress_init()` 在 `PE_init_platform` 之后立即 `draw()`，早于同一函数后面的 `ml_parse_cpu_topology()`。面板行不能解引用尚未初始化的内核状态：TOPO 行的 `ml_get_boot_cpu_number()` 就是对 NULL `topology_info.boot_cpu` 的解引用，它把 diag 和 TOPO 两个内核都杀死在面板之前，一度被误归因为 ArmCpu 覆盖的布局平移。早期可见的数据要么是弱定义零值，要么按 `ml_get_topology_info()` 的 NULL 契约守卫（commit `ab3c9c0`）。
 12. **workflow paths 过滤器**已含 drivers/**（踩了三次坑：drivers/ 或 package/ 的改动 push 后 CI 无反应）；concurrency cancel-in-progress 在构建期间 push 会取消正在跑的构建。
 
 ## 5. 下一步路线（按优先级）
 
-1. **验证 SMP 修复**（已部署）：看 SMP 行 run=7、stage 推进、停在 root device。
+1. **TOPO 数据（守卫修复版已部署）**：面板应先恢复（不再只剩三色条），TOPO 行显示 `boot/max/nums=` 与 `DT cfg/cpu/dev/bus/nv=`，PROBE 行为弱零（未链覆盖）。用 nums 判断 ArmCpu::probe 拒绝的是哪一步，再验证 SMP 行 run=7、stage 推进、停在 root device。
 2. **root device 阶段**：预期 panic/wait。可选：加 `XNU_SHENG_PMGR`（AMFI 需要 PMGR，见 fajita `build-sheng-platform-power.py`，注意它需要 `build/native-prelink/` 的参考候选文件，全新树会失败 —— 需要先跑出第一个 prelink 候选或放宽审计）。
 3. **显示**：`XNU_NATIVE_LEGACY_DISPLAY`（CPU 渲染显示，fajita 的 `build-native-legacy-display.py` + `drivers/NativeMobileDisplay` 覆盖）。屏参：1080x2244（GOP 2240）、stride 4320、fb 0x9c000000。
 4. **触摸**：sirius 触摸 IC 是 SYNAPTICS S3706（主线 DTS `synaptics,s3706`，GENI I2C @0xa94000?）—— 参考 fajita 的 S3706B 驱动（NativeRmi4Touch + NativeGeniI2c，fajita 仓库有完整实现与测试）。
