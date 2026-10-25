@@ -181,6 +181,16 @@ volatile uint32_t armcpu_probe_last_reg, armcpu_probe_last_type_len, armcpu_prob
 // for its reg value; these tell the two apart on the panel.
 volatile int32_t armcpu_probe_last_number, armcpu_probe_boot_number;
 volatile uint32_t armcpu_probe_smp_arg;
+// Bring-up checkpoints: armcpu-panic=N stops with a panic at step N so the panic screen shows how far
+// ArmCpu::start got when the boot stalls inside IOKit matching (the panel stops repainting then).
+static void armcpuCheckpoint (unsigned stage, const char *what)
+{
+  unsigned probe = 0;
+  if (PE_parse_boot_argn ("armcpu-panic", &probe, sizeof (probe)) && probe == stage) {
+    panic ("ArmCpu: checkpoint %u (%s)", stage, what);
+  }
+}
+
 }
 
 IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
@@ -293,6 +303,17 @@ bool ArmCpu::mapGic (void)
 bool ArmCpu::initDistributor (void)
 {
   uint32_t ctl = read32 (dist, 0);
+  // DarwinBoot already brought the distributor up for us (affinity routing plus group 1), and the
+  // boot depends on what it left behind: re-running the quiesce sequence clears the group enables
+  // and can stall the GIC access path on SDM710, which leaves the core with no interrupts at all.
+  // Only quiesce the SPIs and keep the firmware state.
+  if ((ctl & 0x12U) == 0x12U) {
+    unsigned lines = ((read32 (dist, 4) & 31) + 1) * 32;
+    for (unsigned id = 32; id < lines && id < 1020; id += 32) {
+      write32 (dist, 0x180 + id / 8, 0xffffffff);
+    }
+    return true;
+  }
   write32 (dist, 0, ctl & ~3U);
   if (!waitClear (dist, 0, 1U << 31)) { return false; }
   write32 (dist, 0, (ctl & ~3U) | 16U);
@@ -342,7 +363,12 @@ bool ArmCpu::wakeRedistributor (bool local)
 
 bool ArmCpu::prepareGic (void)
 {
-  if (!mapGic () || !initDistributor () || !wakeRedistributor (true)) { return false; }
+  if (!mapGic ()) { return false; }
+  armcpuCheckpoint (7, "mapGic");
+  if (!initDistributor ()) { return false; }
+  armcpuCheckpoint (8, "initDistributor");
+  if (!wakeRedistributor (true)) { return false; }
+  armcpuCheckpoint (9, "wakeRedistributor");
   gGicShared = 1;
   return true;
 }
@@ -411,6 +437,7 @@ bool ArmCpu::start (IOService *provider)
   logicalId = static_cast<uint32_t> (ml_get_cpu_number (physical));
   secondary = logicalId != static_cast<uint32_t> (ml_get_boot_cpu_number ());
   IOLog ("ArmCpu: start physical=%x logical=%u secondary=%u\n", physical, logicalId, secondary ? 1 : 0);
+  armcpuCheckpoint (1, "entry");
   if (secondary) {
     if (!IOCPU::start (provider)) { return false; }
     armcpu_smp_step[logicalId] = 1;
@@ -426,7 +453,10 @@ bool ArmCpu::start (IOService *provider)
     uint64_t bootMpidr;
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (bootMpidr));
     armcpu_boot_mpidr = static_cast<uint32_t> (bootMpidr);
-    if ((!skipGic && !prepareGic ()) || !IOCPU::start (provider)) { return false; }
+    if (!skipGic && !prepareGic ()) { return false; }
+    armcpuCheckpoint (2, "prepareGic");
+    if (!IOCPU::start (provider)) { return false; }
+    armcpuCheckpoint (10, "IOCPU::start");
   }
   cpuName = OSSymbol::withCStringNoCopy ("ARM architectural boot CPU");
   if (cpuName == nullptr) { return false; }
@@ -439,6 +469,7 @@ bool ArmCpu::start (IOService *provider)
   perfmon_interrupt_handler_func pmi = nullptr;
   kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
   if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
+  armcpuCheckpoint (3, "ml_processor_register");
   setCPUNumber (info.log_id);
   armcpu_registered = 1;
   unsigned smp = 0;
@@ -459,8 +490,11 @@ bool ArmCpu::start (IOService *provider)
     panic ("ArmCpu: CPU IRQ action registration failed");
   }
   gController = controller;
+  armcpuCheckpoint (4, "interrupt controller");
   initCPU (true);
+  armcpuCheckpoint (5, "initCPU");
   registerService ();
+  armcpuCheckpoint (6, "registerService");
   __atomic_store_n (&gBootRegistered, 1U, __ATOMIC_RELEASE);
   drainPending ();
   return true;

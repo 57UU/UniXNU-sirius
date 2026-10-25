@@ -245,3 +245,72 @@ ab3c9c0 boot progress: do not read the CPU topology before it is parsed
 
 注：560f772 曾撤掉 ArmCpu 覆盖（当时误判为对象布局平移）；3f190f8 重新引入覆盖并加 probe 计数器。
 ```
+
+## 10. 2026-10-25 晚：format 2 内核首次跑到 `bsd_init`（8 核在线）
+
+这一轮把"蓝条之后无紫条"一路推到 AMFI，硬件证据（面板 OCR）如下：
+
+```
+time=31s idle=30s IRQ=1076 monitor=30 lost=0 root=0 procs=0 free=44514
+TOPO boot=0 max=7 nums=01234567
+PROBE calls=17 acc=8 dtype=9 dnum=0 smp=1 num=7 boot=0 reg=700 tl=8 rl=32
+stage: pid=0 kernel_task bsd_init; calling bsd_autoconf?
+panic: "AMFI: No PMGR?\n" @ConfigurationSettings.cpp:235
+```
+
+### 这一轮修掉的四个真问题
+
+1. `CONFIG_XNU_NATIVE_ARCH_TIMER=n`（见 §4 的补记）：构建脚本用
+   `NATIVE_ARCH_TIMER=${XNU_NATIVE_ARCH_TIMER:-${XNU_ARMCPU:-0}}`，显式 0 会把 BCM2837 的
+   本地中断路由写编进 `start.s`，SDM710 上该地址为空 → MMU 前同步异常。defconfig 已删除该覆盖。
+2. **DarwinBoot 提前使能 timer PPI**：`GIC_SGI_PPI_ENABLE` 含 bit19，`ArmCpu::start` 的每 CPU
+   handler 还没装好，中断先到 → `_sleh_irq+0x70` 的 `blr x8` 跳 0。现在只使能 SGI 0..15，
+   INTID 19 交给 ArmCpu（`armcpu-timer-intid=19`）。
+3. **AppleARMPlatform 的 CPU 类抢占 `/cpus`**：`IONameMatch = "cpu"` 在
+   `IODTPlatformExpert` 里是**前缀匹配**，所以 `cpu0..cpu7` 全中；它的 `start` 校验 Apple 形状的
+   `/cpus`（`max_cpus`/`cpu-id`/`interrupts`/`function-*`）后 panic。原生 ArmCpu 的 personality
+   （`IOPlatformDevice`，probe score 2000）即使 probe 里再加 40000 也抢不过它，所以
+   `scripts/make-uboot-payload.py` 直接把 personality plist 里的 `IONameMatch` 从 `cpu` 改成
+   `xpu`（等长替换，镜像内偏移不变）。
+4. **`ArmCpu::initDistributor` 覆盖了 DarwinBoot 的 GIC 状态**：它重跑
+   `GICD_CTLR &= ~3` → 等待 → `|ARE` 的静默序列，清掉了 group 使能，核心此后没有任何中断，
+   面板定格在最后一秒（**面板定格 ≠ 死等**，面板靠定时器中断重绘）。现在若
+   `GICD_CTLR` 已同时有 ARE 与 group1，就保留固件状态，只静默 SPI。
+
+### 调试工具（都是这一轮加的）
+
+- `armcpu-panic=N`：在 `ArmCpu::start` 的第 N 个检查点 panic（1 入口 / 2 prepareGic / 3 注册 /
+  4 中断控制器 / 5 initCPU / 6 registerService / 7 mapGic / 8 initDistributor /
+  9 wakeRedistributor / 10 IOCPU::start），用来二分"面板定格"到底停在哪。
+- 面板：字号 1080 宽用 2 倍（12×28），行起始下移 `height/24` 让开刘海。
+
+### 下一个卡点：AMFI 的 PMGR
+
+`AMFI: No PMGR?` 发生在 `ConfigurationSettings.cpp:235`。未修改的目标 AMFI 会：
+
+1. `IOService::serviceMatching("ApplePMGRNub")` + `waitForMatchingService`；
+2. `nub+0x88` 取 provider，调用其 `readAon`（vtable 槽 320）/ `writeAon`（槽 321），读值 `|4` 再写回。
+
+原始类尺寸：`ApplePMGR` = 0x4b8a8，`ApplePMGRNub` = 0x740。
+`UniXNU/scripts/audit-amfi-pmgr-contract.py` 把这些指令地址钉死了，可以直接对照。
+`amfi_get_out_of_my_way=1` **不能**跳过这段。
+
+两条路线：
+
+- **A（已验证过的思路）**：照 `UniXNU-sheng` 的做法，用
+  `OSKextLoadKextWithIdentifier("com.apple.driver.ApplePMGR")` 载入原 kext，自己按生成的
+  `OriginalPMGRABI.h` 子类化 `ApplePMGR`（`readAon`/`writeAon` 返回 0xffffffff），再造一个
+  `ApplePMGRNub` 发布为服务；sheng 用 `sheng-pmgr=2` 开关，并且 `payload.py` 在
+  `native-ufs-root=1` 时会强制要求它。
+  注意：sheng 仓库里**没有** `sheng_original_pmgr_nub_create/read/write` 的实现，需要按上面的
+  契约自己写（或继续挖它的 kit）。
+- **B（更快但更脏）**：在 prelinked 内核里 patch 掉 AMFI 这段（跳过查询/读取，AON 取 0xffffffff）。
+  已知锚点：panic 字符串在 `0xfffffff0042dde2d`，其 adrp/add 引用在
+  `0xfffffff004ac9414`，对应 helper 里 `mov w9, #235`；AMFI 的 `__TEXT_EXEC` 在
+  `0xfffffff004aaa000`。
+
+### 设备身份（重要）
+
+刷机前必须核对：`fastboot getvar product` 应为 **`sirius`**、序列号 **`e4b6c475`**。
+本轮曾有另一台设备（`product: rubens`，序列号 `INY58TDYPVJJB6AE`）连在同一台主机上，
+误刷会覆盖那台的 vendor 分区（用其原厂 `vendor.img` 恢复）。
