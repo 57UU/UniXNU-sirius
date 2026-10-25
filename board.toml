@@ -59,6 +59,7 @@ archives = [
   "build-sirius-probes.py",           # the dormant probe stubs (package/LegacyDisplayProbe.cpp)
   "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log)
   "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
+  "build-sirius-usb.py",              # the CDC-ACM log console (kits/sirius/sirius_usb.c)
 ]
 
 # The hardware description handed to the payload step. dts/sirius.dts describes the board
