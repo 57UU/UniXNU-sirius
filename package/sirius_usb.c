@@ -1280,6 +1280,15 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	}
 }
 
+/* Boot-progress evidence: the panel's console section is an early snapshot, so the driver
+ * publishes its progress as globals that package/BootProgress.c draws on its own row. */
+volatile uint32_t sirius_usb_step;      /* 1 enabled, 2 GCC mapped, 3 power ok, 4 SMMU mapped,
+                                         * 5 guard ok, 6 DWC3 mapped, 7 gadget started, 8 connected */
+volatile uint32_t sirius_usb_gcc;       /* GCC_USB30_PRIM_GDSCR */
+volatile uint32_t sirius_usb_smmu;      /* SMMU guard result, 1 = pass */
+volatile uint32_t sirius_usb_dwc;       /* DWC3 GSNPSID */
+volatile uint32_t sirius_usb_dsts;      /* DWC3 DSTS */
+
 void
 sirius_usb_console_start(void)
 {
@@ -1294,12 +1303,15 @@ sirius_usb_console_start(void)
 	if (!enabled) {
 		return;
 	}
+	sirius_usb_step = 1;
 	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
 	if (gcc == 0) {
 		printf("SIRIUS USB: GCC map failed\n");
 		return;
 	}
+	sirius_usb_step = 2;
 	uint32_t gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+	sirius_usb_gcc = gdscr;
 	uint32_t master = usb_rd(gcc, GCC_USB30_PRIM_MASTER);
 	uint32_t sleep = usb_rd(gcc, GCC_USB30_PRIM_SLEEP);
 	uint32_t mock = usb_rd(gcc, GCC_USB30_PRIM_MOCK_UTMI);
@@ -1310,6 +1322,9 @@ sirius_usb_console_start(void)
 	    gdscr, master, cfg, aggre);
 	printf("SIRIUS USB: GCC sleep=%08x mock_utmi=%08x clkref=%08x\n",
 	    sleep, mock, clkref);
+	if (gdscr & (1u << 31)) {
+		sirius_usb_step = 3;
+	}
 	if (!(gdscr & (1u << 31)) || ((master | cfg | aggre) & (1u << 31))) {
 		printf("SIRIUS USB: clocks/power unavailable; controller untouched\n");
 		sirius_usb_park(hold);
@@ -1322,6 +1337,7 @@ sirius_usb_console_start(void)
 		sirius_usb_park(hold);
 		return;
 	}
+	sirius_usb_step = 4;
 	printf("SIRIUS USB: SMMU mapped %u bytes\n", (unsigned)smmu_size);
 	if (bind_smmu == 3) {
 		ud.smmu_guard = sirius_usb_smmu_probe_page(smmu);
@@ -1337,6 +1353,9 @@ sirius_usb_console_start(void)
 		return;
 	}
 	ud.dwc = dwc;
+	sirius_usb_step = 6;
+	sirius_usb_dwc = usb_rd(dwc, 0xc120);
+	sirius_usb_dsts = usb_rd(dwc, DSTS);
 	printf("SIRIUS USB: DWC3 GSNPSID 0x%08x GCTL 0x%08x DCTL 0x%08x DSTS 0x%08x DCFG 0x%08x\n",
 	    usb_rd(dwc, 0xc120), usb_rd(dwc, GCTL), usb_rd(dwc, DCTL),
 	    usb_rd(dwc, DSTS), usb_rd(dwc, DCFG));
@@ -1395,12 +1414,17 @@ sirius_usb_console_start(void)
 		}
 	}
 	ud.smmu_guard = sirius_usb_smmu_guard(smmu, 0, 0);
+	sirius_usb_smmu = ud.smmu_guard ? 1u : 0u;
+	if (ud.smmu_guard) {
+		sirius_usb_step = 5;
+	}
 	if (!ud.smmu_guard) {
 		printf("SIRIUS USB: SID e0 guard refused; controller untouched\n");
 		sirius_usb_park(hold);
 		return;
 	}
 	if (enabled >= 2) {
+		sirius_usb_step = 7;
 		sirius_usb_gadget_start(dwc, smmu);
 	} else {
 		printf("SIRIUS USB: route test complete; DWC3 remains halted\n");

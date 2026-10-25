@@ -390,3 +390,34 @@ USB 侧的当前事实（来自本仓库的 Linux 源码 `sirius-distro/kernel/l
 force-load）；XNU 补丁只保留 `bsd_init.c` 启动调用和 `serial_console.c` 镜像钩子。
 **不要**再往 `bsd/conf/files` 加新文件：由 conf/files 生成的 makefile 不会包含补丁新增的文件，
 对象永远不会被编出来，而符号表却会引用它。
+
+### USB 卡点已定位：GCC 把 USB 的 GDSC 关了（2026-10-26 00:20）
+
+面板新增一行（`package/BootProgress.c` 第 29 行，数据来自 `kits/sirius/sirius_usb.c` 导出的
+`sirius_usb_step/gcc/smmu/dwc/dsts`）：
+
+```
+USB step=2 gcc=00222001 smmu=0 gsnpsid=00000000 dsts=00000000
+SMP req=1 run=7 cond=1 boot=0 | c1..c7=step7
+```
+
+- `step=2`：GCC 映射成功、寄存器读到，然后**在电源门检查处退出**。
+- `gcc=0x00222001`：bit31 = 0（**未上电**），bit0 = 1（**SW_COLLAPSE 已置位**）。
+  驱动按设计不碰未上电的控制器，所以 SMMU/DWC3 都没走到（`smmu=0`、`gsnpsid=0`）。
+- 偏移不是错的：`gcc-sdm845.c` 里 `usb30_prim_gdsc.gdscr = 0xf004`，与本移植的
+  `GCC_USB30_PRIM_GDSCR 0x0f004` 一致（SDM670/710 与 SDM845 同族）。
+- **SMP 这次全起来了**（`run=7`，7 个从核都在 `step7`）。之前那次 `step4` 是偶发，
+  与 USB 无关；说明 PSCI/复位向量那条路是通的。
+
+下一步（USB）：像 Linux 的 `gdsc_enable` 那样自己上电——
+
+1. `GDSCR(0xf004)`: 清 bit0（SW_COLLAPSE），轮询 bit31 直到置位（有界，例如 100 ms）；
+2. 若 bit31 仍为 0，说明父域（CX）没电，需要 RPMH/regulator，那时再评估；
+3. 上电后依次打开 `CFG_NOC_USB3_PRIM_AXI`、`USB30_PRIM_MASTER`、`AGGRE_USB3_PRIM_AXI`、
+   `USB30_PRIM_SLEEP`、`USB30_PRIM_MOCK_UTMI` 的 CBCR（清 bit0，轮询 bit31 == 0），
+   以及 `USB3_PRIM_CLKREF`；
+4. QUSB2 PHY（`0x88e2000`，仅 USB2）：按 `qusb2-v2-phy` 的初始化序列配置并上电；
+5. 再让 DWC3（`0xa600000`）走 reset → device mode。
+
+建议先把 1 做成一个 `sirius_usb_power=1` 的实验开关，只看 `gcc` 从 `0x222001` 变成
+bit31=1 的什么值，就能判断父域是否还在。
