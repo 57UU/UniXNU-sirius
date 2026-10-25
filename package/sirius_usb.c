@@ -206,6 +206,7 @@ static struct {
 	uint64_t    tx_pos;                  /* ring reader position */
 	uint64_t    events, chars, polls;
 	uint32_t    last_event[2];
+	uint32_t    tx_delay_ms;
 } ud;
 
 static inline uint32_t
@@ -980,7 +981,7 @@ ud_setup(void)
 static void
 ud_tx_pump(void)
 {
-	if (!ud.configured || ud.tx_busy) {
+	if (!ud.configured || ud.tx_busy || ud.tx_delay_ms > 0) {
 		return;
 	}
 	uint32_t n = pur_copy(&ud.tx_pos, (char *)(ud.dma + UD_TX), UD_TX_SIZE);
@@ -1462,8 +1463,14 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	 * secondaries did not come up, a background thread does not get scheduled at all - the host
 	 * then sees a device that never answers its descriptor reads (error -110). Polling for a few
 	 * seconds after RUN covers the whole enumeration window. */
+	/* Give the host a moment to create the tty and let the capture attach: cdc_acm keeps no
+	 * backlog for a port that is not open yet, so a burst sent at configure time is lost. */
+	ud.tx_delay_ms = 3000;
 	for (unsigned ms = 0; ms < 45000; ms++) {
 		sirius_usb_busy_wait(1000);
+		if (ud.tx_delay_ms > 0) {
+			ud.tx_delay_ms--;
+		}
 		ud_poll();
 		/* Stop once the host has been given the whole pre-boot console mirror; until then the
 		 * pump is the only thing that can move bytes, because the poller thread is not scheduled

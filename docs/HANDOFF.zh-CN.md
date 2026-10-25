@@ -665,3 +665,27 @@ if (boot_progress_active()) { boot_progress_putc(c); return; }
 - 若 `smmu=0`：说明 `boot_progress_putc` 也不是面板文本的来源，需要改为在
   `serial_console.c` 的 `_cnputc` **最开头**（`boot_progress_active()` 判断之前）插入钩子——
   这是补丁 `patches/xnu/sirius-usb-console.patch` 的下一次修改点。
+
+### 数据通道最后一条线索（2026-10-26 03:25）
+
+主机侧端点描述符已经完全正确（`lsusb -v` 确认 `0x85` EP5 IN、`0x83` EP3 IN、`0x02` EP2 OUT，
+512 字节，无 "invalid maxpacket" 警告），设备也报告已提交 `ud.chars = 0xee5`（3829 字节）。
+
+但主机读不到任何字节：`cat /dev/ttyACM0` 和 `capture-usb-console.py` 都是 0。
+
+关键推断：**`ud.chars` 只在提交 TRB 时累加，不代表传输成功**。`tx_busy` 会被完成事件清掉，
+说明 TRB 确实完成了——但完成状态（成功 / NAK 后错误 / 短包）我们没有检查。所以现在的现象
+与"每次 IN 都以错误状态完成"完全一致。
+
+下一步（下一次上机）：
+
+1. 在 `ud_event()` 的 `ep == EP_TX && type == 1` 分支里读取**事件的 status 字段**
+   （`(ev >> 12) & 0xf`），把非 0（错误）与成功分开计数，打到面板上；
+2. 检查 `SETEPCONFIG` 的 param0 位域是否与 DWC3 3.30a 一致：`bits[1:0]` 端点类型、
+   `bits[5:3]` maxpacket、`bits[16]`/`bit17`（XferComplete/XferInProgress 使能）、
+   以及 IN 端点是否需要 `bit[17]=FIFO number`；
+3. 确认 `EP_TX` 的 `SETTRANSFRESOURCE`（fifo 号 1）与 `DALEPENA` 对应位；
+4. 若都正确，用 QSCRATCH 的 `GUSB2PHYCFG`/`GCTL` 复核 UTMI 方向（IN 传输走 UTMI 上行）。
+
+至此 USB 的**控制通道 100% 工作**（枚举、描述符、CDC 绑定、ttyACM 节点），只剩 bulk IN 的
+一次成功传输。这个结论已足够支撑明天一次性定位。
