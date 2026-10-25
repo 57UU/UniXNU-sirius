@@ -354,3 +354,39 @@ panic: Failed to mount root device @IOKitBSDInit.cpp:984
    卷或另一块内存盘提供根；
 3. **ramdisk 根**：做一个 APFS/只读根镜像塞进 payload，`rd=` 起，先验证用户态；
 4. 同时建议补上 USB CDC-ACM 串口（见 §10 开头引用的 picasso PR），这样 root 阶段的日志不再靠拍照。
+
+### 2026-10-26 凌晨：USB 控制台已链接，SMP 从核其实没起来
+
+面板（`time=842s`，`sirius_usb_hold=1` 把内核停在 `bsd_init`）：
+
+```
+stage: pid=0 bsd_init enter          IRQ=30775 monitor=829
+SMP req=1 run=0 cond=1 boot=0 | c1=step4 c2=step4 ... c7=step4
+TIMER ctl=1   GIC stride=20000 typer.lo=21
+```
+
+两条结论：
+
+1. **面板的 `Kernel console` 区是早期快照**（一直停在 iBoot / IONVRAM 那几行），
+   所以"没有 `SIRIUS USB:` 输出"**不能**推断驱动没跑；要把驱动的状态放到
+   boot-progress 的行里（像 `armcpu_probe_*` 那样导出全局，由 `package/BootProgress.c` 打印），
+   否则 USB 控制台和面板互相等，没法诊断。
+2. **SMP 从核没有真正启动**：`armcpu_smp_step[]` 全部停在 4（已发 PSCI CPU_ON），
+   `run=0`、没有任何核到 5（进入 initCPU）。之前面板的 `PROBE acc=8` 只说明
+   ArmCpu 注册了 8 个 nub，不等于核起来了。这是独立于 USB 的一个真问题，
+   下一步要查 PSCI CPU_ON 的返回值（`armcpu_smp_psci_rc[]`）和复位向量页的清理范围。
+
+USB 侧的当前事实（来自本仓库的 Linux 源码 `sirius-distro/kernel/linux-sirius`）：
+
+| 项 | 值 |
+| --- | --- |
+| DWC3 | `0xa600000`，reg 大小 `0xcd00` |
+| wrapper (QSCRATCH) | `0xa6f8800`（= DWC3 + 0xf8800） |
+| PHY | QUSB2 `0x88e2000`，**只有 USB2**，无 SuperSpeed，无需 QMP |
+| apps_smmu stream id | **`0x740`**（移植源自 SM7250 的 `0xe0`，这是必须改的一处） |
+
+构建集成：驱动在 `kits/sirius/sirius_usb.c`，由 `scripts/build-sirius-usb.py` 编成对象并加入
+`build/sheng-platform-power/libShengPlatformPower.a`（该归档由 `CONFIG_XNU_SHENG_PMGR=1`
+force-load）；XNU 补丁只保留 `bsd_init.c` 启动调用和 `serial_console.c` 镜像钩子。
+**不要**再往 `bsd/conf/files` 加新文件：由 conf/files 生成的 makefile 不会包含补丁新增的文件，
+对象永远不会被编出来，而符号表却会引用它。
