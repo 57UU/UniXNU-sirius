@@ -314,3 +314,43 @@ panic: "AMFI: No PMGR?\n" @ConfigurationSettings.cpp:235
 刷机前必须核对：`fastboot getvar product` 应为 **`sirius`**、序列号 **`e4b6c475`**。
 本轮曾有另一台设备（`product: rubens`，序列号 `INY58TDYPVJJB6AE`）连在同一台主机上，
 误刷会覆盖那台的 vendor 分区（用其原厂 `vendor.img` 恢复）。
+
+### AMFI 已打通（2026-10-25 深夜）与下一个卡点
+
+**不用改目标内核**：AMFI 那两条 thunk 是
+
+```asm
+ldr x0, [x0, #0x88]   ; provider = nub->pmgr
+cbz x0, +0x10         ; NULL 时 readAon 返回 0、writeAon 直接返回
+```
+
+所以只要发布一个**真正的 `ApplePMGRNub` 实例、但把 provider 留空**，AMFI 就会读到 0、`|4`、写空，
+latch 正常完成。实现是 `package/SiriusPmgr.cpp`：
+
+1. `OSMetaClass::getMetaClassWithName("ApplePMGRNub")` → `alloc()` → `init()`；
+2. attach 到 `IOService::getPlatform()` 后 `registerService(kIOServiceSynchronous)`；
+3. 自己用 `serviceMatching` + `waitForMatchingService` 验证并 `IOLog`（`sirius-pmgr: ApplePMGRNub size=1856 ...`）。
+
+挂接点是 `sheng-platform-power.patch` 在 `bsd_init` 里的 `sheng_pmgr_run()`（`CONFIG_XNU_SHENG_PMGR=1`，
+启动参数 `sheng-pmgr=2`）。**构建脚本必须把归档写到
+`build/sheng-platform-power/libShengPlatformPower.a`**：`build-xnu-4k-baseline.sh` 只 force-load 这个路径。
+
+硬件结果：
+
+```
+time=61s idle=60s IRQ=2145 monitor=60 root=0
+TOPO boot=0 max=7 nums=01234567 / PROBE acc=8 num=7 reg=700
+stage: bsd_init; calling setconf? -> bsd_autoconf?
+panic: Failed to mount root device @IOKitBSDInit.cpp:984
+```
+
+也就是说：I/O Kit、8 核 SMP、timer、AMFI 全部走通，现在缺的是**块设备 + 根文件系统**。
+
+下一步选项：
+
+1. **UFS 驱动**：SDM710 是 UFS 2.1，参考 `UniXNU/ShengUfs`（sheng 的 NativeUfs）移植 ufshcd + PHY +
+   SCSI/SD 层；
+2. **VirtIO 块**：如果有可用的 virtio-mmio 传输（sheng 用过 `VirtioMmioBlock`），可以从 payload
+   卷或另一块内存盘提供根；
+3. **ramdisk 根**：做一个 APFS/只读根镜像塞进 payload，`rd=` 起，先验证用户态；
+4. 同时建议补上 USB CDC-ACM 串口（见 §10 开头引用的 picasso PR），这样 root 阶段的日志不再靠拍照。

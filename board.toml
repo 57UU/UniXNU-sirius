@@ -58,6 +58,7 @@ archives = [
   "build-libpthread-kernel.py",
   "build-sirius-probes.py",           # the dormant probe stubs (package/LegacyDisplayProbe.cpp)
   "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log)
+  "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
 ]
 
 # The hardware description handed to the payload step. dts/sirius.dts describes the board
@@ -86,6 +87,7 @@ kernel_args = [
   "cpus=8",
   "armcpu-self-ipi=1",
   "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
+  "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
 ]
 
 # The platform identity seed (--unique-chip-id) is not stored in any repository; the first boot

@@ -51,3 +51,7 @@ CONFIG_XNU_NATIVE_PAN=n
 CONFIG_XNU_SOURCE_MOCKFS=n
 CONFIG_XNU_TRUST_CACHE_RUNTIME=n
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=n
+
+# Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can
+# advertise the ApplePMGRNub that AMFI looks for (the target kernelcache stays unmodified).
+CONFIG_XNU_SHENG_PMGR=1
