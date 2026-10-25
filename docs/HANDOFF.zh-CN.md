@@ -486,3 +486,32 @@ PHY 的 powerdown/retention 释放、PLL lock 轮询，再回来重放 EP0 命�
 
 注意：PHY 的 AHB 时钟若没开就去读写 `0x88e2000` 同样会挂总线，所以要先确认
 `GCC_USB_PHY_CFG_AHB2PHY_CLK`（以及 `GCC_QUSB2PHY_PRIM_BCR`）的开法，再动 PHY 寄存器。
+
+### QUSB2 PHY 已接入，PLL 不锁（2026-10-26 01:40）
+
+`package/sirius_usb.c` 现在在 DWC3 之前做 PHY 上电：AHB2PHY 分支（GCC `0x6a004`）→
+QUSB2PHY_PRIM 块复位（BCR `0x12000`，assert/100us/deassert）→ 16 条 v2 初始化表 →
+释放 `POWER_DOWN`（`0x210`）→ 轮询 `PLL_LOCKED`（`0x1a0` bit5）。
+
+面板结果：
+
+```
+USB step=68 gcc=F8222000 clk=22222222 smmu=00000001 pll=17171717 dwc=5533300a
+```
+
+- `pll=0x17171717`：bit5 = 0 → **PLL 未锁定**；
+- `clk=0x22222222`（`0x210` POWERDOWN 读回）：不是写入的值（写入后应为 `0x22`），
+  这种"每字节同值"的模式通常是**总线错误/未真正访问到寄存器**，而不是 PHY 内容；
+- `gcc` 仍是 `f8222000`、`dwc=5533300a`：GDSC 与 DWC3 都正常，问题只在 PHY 访问/时钟。
+
+下一步（按可能性排序）：
+
+1. **只读 dump PHY 若干寄存器**（`0x04` 应回 `0x03`、`0x240` 应回 `0x30`），确认写入是否真的落到了 PHY；
+   若读回仍是 `0x22222222` 一类，说明 `0x88e2000` 映射或 AHB 时钟不对。
+2. 确认 SDM710 的 `GCC_USB_PHY_CFG_AHB2PHY_CLK` 偏移：`0x6a004` 来自 SDM845，需核对；
+   可用只读方式扫 `0x6a000`–`0x6a020` 找带 halt 位的分支。
+3. 若寄存器能读到但 PLL 不锁，检查 PHY 的参考时钟方案（`TCSR_PHY_CLK_SCHEME` 的 single-ended
+   选择）与 CXO 是否到达 PHY；Linux v2 默认 `se_clk_scheme_default = true`。
+
+已完成并可复用的部分（都不需要再试）：GDSC 上电、AXI/master/sleep/mock_utmi 分支、
+SMMU guard（SID 0x740）、DWC3 识别与软复位。

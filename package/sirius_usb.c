@@ -51,6 +51,7 @@ volatile uint32_t sirius_usb_dwc;       /* DWC3 GSNPSID */
 volatile uint32_t sirius_usb_dsts;      /* DWC3 DSTS */
 volatile uint32_t sirius_usb_clk;       /* (master|cfg|aggre) CBCR, bit31 = clock off */
 volatile uint32_t sirius_usb_pll;       /* GPLL0 enable/status (GCC 0x52000) */
+static vm_offset_t sirius_usb_gcc_va;   /* GCC mapping, shared with the PHY power-up */
 
 static uint32_t _Atomic pur_lock;
 static uint64_t _Atomic pur_dropped;
@@ -1108,6 +1109,62 @@ sirius_usb_select_utmi_clk(vm_offset_t qs)
 	sirius_usb_sync_mark("SIRIUS USB: UTMI complete");
 }
 
+/* QUSB2 PHY at 0x88e2000 (USB2 only, the port has no SuperSpeed PHY). Registers and the init
+ * table are the qusb2-v2 values from the Linux driver; without this the DWC3 has no PIPE clock and
+ * its endpoint commands never complete (observed: the core stays halted at DEVCTRLHLT). */
+#define PHY_PA 0x088e2000u
+#define PHY_SIZE 0x400u
+#define PHY_POWERDOWN 0x210u
+#define PHY_PLL_STATUS 0x1a0u
+#define PHY_PLL_LOCKED (1u << 5)
+
+static bool
+sirius_usb_phy_power(vm_offset_t gcc)
+{
+	/* AHB2PHY branch, then the QUSB2PHY_PRIM block reset: assert, 100 us, deassert. */
+	usb_wr(gcc, 0x6a004, usb_rd(gcc, 0x6a004) | 1u);
+	for (unsigned ms = 0; ms < 50; ms++) {
+		if (!(usb_rd(gcc, 0x6a004) & (1u << 31))) { break; }
+		sirius_usb_busy_wait(1000);
+	}
+	if (usb_rd(gcc, 0x6a004) & (1u << 31)) {
+		sirius_usb_step = 64;                    /* AHB2PHY branch never left halt */
+		sirius_usb_clk = usb_rd(gcc, 0x6a004);
+		return false;
+	}
+	usb_wr(gcc, 0x12000, 1u);
+	sirius_usb_busy_wait(200);
+	usb_wr(gcc, 0x12000, 0u);
+	sirius_usb_busy_wait(200);
+
+	vm_offset_t phy = ml_io_map(PHY_PA, PHY_SIZE);
+	if (phy == 0) {
+		sirius_usb_step = 65;
+		return false;
+	}
+	static const struct { uint32_t off, value; } table[] = {
+		{0x04, 0x03}, {0x18c, 0x7c}, {0x2c, 0x80}, {0x184, 0x0a}, {0xb4, 0x19},
+		{0x194, 0x40}, {0x198, 0x20}, {0x214, 0x21}, {0x220, 0x00}, {0x224, 0x58},
+		{0x240, 0x30}, {0x244, 0x29}, {0x248, 0xca}, {0x24c, 0x04}, {0x250, 0x03},
+		{0x23c, 0x00},
+	};
+	/* Hold the PHY down with the v2 disable bits while the table is programmed. */
+	usb_wr(phy, PHY_POWERDOWN, usb_rd(phy, PHY_POWERDOWN) | 0x23u);
+	for (unsigned i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+		usb_wr(phy, table[i].off, table[i].value);
+	}
+	usb_wr(phy, PHY_POWERDOWN, usb_rd(phy, PHY_POWERDOWN) & ~1u);
+	sirius_usb_busy_wait(200);
+	for (unsigned ms = 0; ms < 100; ms++) {
+		if (usb_rd(phy, PHY_PLL_STATUS) & PHY_PLL_LOCKED) { return true; }
+		sirius_usb_busy_wait(1000);
+	}
+	sirius_usb_step = 66;                            /* PHY programmed, PLL never locked */
+	sirius_usb_clk = usb_rd(phy, PHY_POWERDOWN);
+	sirius_usb_pll = usb_rd(phy, PHY_PLL_STATUS);
+	return false;
+}
+
 static void
 sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 {
@@ -1115,6 +1172,11 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	uint32_t devid = usb_rd(dwc, 0xc120);
 	uint32_t hwparams0 = usb_rd(dwc, 0xc140);
 	unsigned awidth = hwparams0 >> 24;
+	if (!sirius_usb_phy_power(sirius_usb_gcc_va)) {
+		sirius_usb_step = 68;
+		return;
+	}
+	sirius_usb_step = 69;
 	uint32_t gctl = usb_rd(dwc, GCTL);
 
 	ud.dwc = dwc;
@@ -1342,6 +1404,7 @@ sirius_usb_console_start(void)
 		return;
 	}
 	sirius_usb_step = 2;
+	sirius_usb_gcc_va = gcc;
 	uint32_t gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
 	sirius_usb_gcc = gdscr;
 	uint32_t master = usb_rd(gcc, GCC_USB30_PRIM_MASTER);
