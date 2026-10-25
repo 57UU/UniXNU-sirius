@@ -1,0 +1,113 @@
+# Board description of the Xiaomi Mi 8 SE (sirius, SDM710), read by the unixnu build driver.
+#
+# Format 2: the ARM64, SoC, OS and device layers merge, and this file only states what the
+# board changes. The prelink roots, slide, early security initializer, IPSW identity and the
+# Apple device-tree properties come from the selected OS profile
+# (profiles/os/ipados-17.7.11-21H461/profile.toml of UniXNU); the GIC, timer and CPU topology
+# come from the sdm710 SoC profile and dts/sirius.dts.
+#
+# Bring-up stage: the XNU kernel reaches IOKit through the device's own U-Boot, which replaces
+# the Mu-Silicium firmware step. There is no [firmware] table and no boot image on this port:
+# UniXNU.efi is started by U-Boot from a FAT partition, DarwinBoot.efi travels in the payload
+# volume as a [[driver]], and the payload FAT volume is flashed to the vendor partition
+# (mmcblk0p80, 3 GiB).
+
+schema_version = 2
+
+[board]
+name = "sirius"
+soc = "SDM710"
+soc_source = "sdm710"
+os_profile = "ipados-17.7.11-21H461"
+description = "Xiaomi Mi 8 SE"
+kit = "sirius"
+
+# ArmDTPlatform drives the platform expert from dts/sirius.dts. ArmCpu is the board's modified
+# copy in drivers/ArmCpu (non-Apple timer INTID, /cpus probe counters, sheng-smp). DarwinBoot is
+# the board's fork with the GIC-500 pre-configuration and the INTID 19 timer. XnuPrelink is the
+# prelink kit the OS profile names.
+[components]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+
+# The unchanged iPad7,1 iPadOS 17.7.11 restore image, the same target as fajita and sheng.
+# SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication, so it runs
+# arm64 userlands only. The 21H461 kernelcache matches the XNU 23.6.0 source pinned by the
+# OS profile and the prelink roots it selects.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+# The kernel step runs on macOS + Xcode (the CI workflow in this repository) or on Linux
+# through scripts/linux of UniXNU. config_fragments apply in order, then defconfig overrides
+# them: sirius keeps the first-console configuration of the legacy port.
+[kernel]
+defconfig = "sirius_defconfig"
+config_fragments = ["arch:configs/common.config", "soc:configs/sdm710.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:ArmCpu",
+  "build-libpthread-kernel.py",
+  "build-sirius-probes.py",           # the dormant probe stubs (package/LegacyDisplayProbe.cpp)
+  "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log)
+]
+
+# The hardware description handed to the payload step. dts/sirius.dts describes the board
+# (memory, CPUs, PSCI, GIC); dts/sdm710.dtsi of the SoC profile carries the shared controller.
+[device_tree]
+source = "device:dts/sirius.dts"
+include_dirs = ["soc:dts"]
+
+# The payload volume: flashed to the vendor partition (mmcblk0p80, 3 GiB) as a FAT32 image and
+# read by U-Boot. dram_size is the observed usable DRAM of the 6 GiB model: 2 GiB at 0x80000000
+# plus 0xfd6c0000 at 0x100000000, and must equal the memory node of dts/sirius.dts.
+[payload]
+volume = "SIRIUSESP"
+size_mib = 256
+loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]] Payloads/DarwinBoot.efi
+title = "sirius first boot: XNU to console"
+dram_size = "0x17d6c0000"
+panic_screen = true
+kernel_args = [
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "ml-timeout-lock-panic-scale=40",
+  "-no_slto_panic",
+  "boot-progress=2",                # draw the kernel console lines on the screen (the readable log)
+  "sheng-smp=1",                    # ArmCpu claims every /cpus nub: without it AppleARMCPU (kernelcache) takes the secondary nubs and panics on the non-Apple tree
+  "cpus=8",
+  "armcpu-self-ipi=1",
+  "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
+]
+
+# The platform identity seed (--unique-chip-id) is not stored in any repository; the first boot
+# needs no seed, and chip_id is only used together with one.
+[payload.adt]
+chip_id = "8011"
+
+# The Apple device-tree properties the OS profile does not already supply. Its [adt] tables
+# write /chosen, /product and the iPad7,1 identity (model iPad7,1, target-type J120); the board
+# adds the suspend policy, its own product model and the button set (no Home button).
+[adt.product.string]
+model = "xiaomi,sirius"
+
+[adt.defaults.u32]
+sleep-disabled = 1                  # no suspend/resume on this board: do not let the CPU park forever
+
+[adt.buttons.string]
+compatible = "buttons"
+device_type = "buttons"
+
+[adt.buttons.strings]
+button-names = ["hold", "voldown", "volup"]
+
+[adt.buttons.u32]
+home-button-type = 2                # the non-mechanical answer BSPlatform passes through

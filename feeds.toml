@@ -1,0 +1,12 @@
+# Extra sources of the sirius port. UniXNU components resolve from the component catalog;
+# this file pins the shared SoC layer that board.toml selects as soc_source.
+#
+# The SoC repository is the hardware description and platform facts shared by SDM710 boards
+# (GIC-500, the 19.2 MHz counter, PSCI, the timer INTID). Bump the commit after reviewing a
+# change there; unixnu.lock records what a fetch actually produced.
+
+[[source]]
+name = "sdm710"
+kind = "soc"
+git = "https://github.com/57UU/UniXNU-sdm710-common"
+commit = "bd30bd01f38d1d438086a14932fe87ad5cd8d507"

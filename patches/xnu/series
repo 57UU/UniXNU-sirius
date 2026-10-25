@@ -1,0 +1,7 @@
+# Board XNU patches, one path per line in application order (patches/xnu/ of this repository).
+#
+# The sirius port currently changes nothing below the OS profile: the kernel behaviour it needs
+# lives in the ARM64 series of UniXNU (4 KiB pages, native trust cache, the DT panic region,
+# boot progress) and in its own sources (drivers/ArmCpu, drivers/DarwinBoot, package/).
+# A board change goes here when it must be a patch; follow
+# https://unixnu.com/xnu/source-and-patches#add-a-patch to export and order it.

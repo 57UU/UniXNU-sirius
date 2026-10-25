@@ -1,0 +1,12 @@
+# Firmware inputs of the sirius port: relative path | source | SHA-256 | consumer
+#
+# The port has no Mu-Silicium firmware and no boot.img. The two firmware-facing inputs are the
+# device's U-Boot (the UEFI implementation) and the vendor partition that carries the payload;
+# both come from sirius-distro and are flashed by the user, not built here.
+#
+# The Apple side is fetched from the IPSW by "unixnu ipsw fetch" into out/ipsw/21H461/ and is
+# never committed: KernelCache, DeviceTree, StaticTrustCache and the Cryptex system trust cache.
+#
+# path | source | sha256 | consumer
+# boot.img | https://github.com/57UU/sirius-distro (U-Boot 2026.07, EFI_LOADER) | <sha256> | ABL boot partition
+# vendor (mmcblk0p80) | output of make-uboot-payload.py | <sha256> | U-Boot boot menu

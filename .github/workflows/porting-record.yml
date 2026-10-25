@@ -1,0 +1,13 @@
+name: Device documentation
+
+# Validates porting.toml against the UniXNU record schema and against board.toml: every area
+# present, every selected component covered, evidence present for claimed work, evidence files
+# tracked. Runs on every push and pull request.
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  porting-record:
+    uses: UniXNU/UniXNU/.github/workflows/porting-record.yml@main

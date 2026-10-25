@@ -1,0 +1,8 @@
+# Copy to local.toml (ignored by Git) to point whole categories at local directories while
+# developing. Each subdirectory is one module. The UniXNU command line (--local, --local-drivers,
+# --local-module NAME=PATH) takes precedence over this file.
+#
+# Example: iterate on the ArmCpu copy of this board without committing it to the tree:
+#   [local]
+#   drivers = "/home/user/scratch/drivers"
+[local]

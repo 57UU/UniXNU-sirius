@@ -1,0 +1,84 @@
+/dts-v1/;
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+/*
+ * Xiaomi Mi 8 SE (sirius), Qualcomm SDM710 - board hardware description.
+ *
+ * UniXNU compiles this tree and derives the Apple device tree (kernel.macho.adt) from it:
+ *   - the memory node becomes /chosen/dram-base and /chosen/dram-size, and must match
+ *     [payload] dram_size of board.toml
+ *   - /cpus becomes the ADT /cpus (one node per enabled core, in this order, boot CPU first)
+ *   - /psci becomes the ADT /psci
+ *   - each node carrying "unixnu,adt-name" is exported under the ADT /arm-io window
+ * The Apple-side properties (/chosen security status, /product, /defaults) come from the
+ * [adt] tables of the OS profile and board.toml, not from this file.
+ *
+ * Values are from the mainline sdm670.dtsi (SDM710 is a superset of SDM670), the vendor kernel
+ * tree and measurements on the phone.
+ */
+
+/include/ "sdm710.dtsi"
+
+/ {
+	model = "Xiaomi Mi 8 SE";
+	compatible = "xiaomi,sirius", "qcom,sdm710";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	/*
+	 * Observed usable DRAM of the 6 GiB model: 2 GiB at 0x80000000, then 0xfd6c0000 at
+	 * 0x100000000. The range is contiguous in the kernel's view, as the ADT handoff requires
+	 * one contiguous DRAM range.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x1 0x7d6c0000>;
+	};
+};
+
+/*
+ * Eight Kryo 360 cores, Affinity1 0x000..0x700. cpu0-5 are Cortex-A55 (Silver), cpu6-7 are
+ * Cortex-A75 (Gold). The boot CPU is cpu0. The order of the children is the order of the ADT
+ * /cpus nodes: ArmCpu numbers the cores by it, and the command line caps them with cpus=8.
+ */
+&cpus {
+	cpu@0 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x0>;
+	};
+	cpu@100 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x100>;
+	};
+	cpu@200 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x200>;
+	};
+	cpu@300 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x300>;
+	};
+	cpu@400 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x400>;
+	};
+	cpu@500 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a55";
+		reg = <0x500>;
+	};
+	cpu@600 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a75";
+		reg = <0x600>;
+	};
+	cpu@700 {
+		device_type = "cpu";
+		compatible = "arm,cortex-a75";
+		reg = <0x700>;
+	};
+};

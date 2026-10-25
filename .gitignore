@@ -1,0 +1,12 @@
+# Local overrides and generated output. Everything below is machine specific or produced by a
+# build; the repository tracks sources, configuration and the porting record only.
+/local.toml
+out/
+build/
+.cache/
+refer/
+__pycache__/
+*.pyc
+*.img
+*.adt
+.DS_Store
