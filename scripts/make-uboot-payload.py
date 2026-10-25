@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 def run_mtool(argv, check=True):
@@ -34,6 +35,34 @@ def run_mtool(argv, check=True):
     if check and result.returncode:
         raise SystemExit(f'{" ".join(argv)} failed: {result.stdout}')
     return result
+
+
+def neutralize_apple_cpu(image):
+    """Stop the prelinked AppleARMCPU personality from claiming the CPU nubs.
+
+    AppleARMPlatform.kext ships an AppleARMCPU class whose personality is
+    IONameMatch = "cpu" with probe score 100. IODTPlatformExpert matches names by prefix, so
+    "cpu" also matches this board's cpu0..cpu7 nodes. Its start validates an Apple-shaped /cpus
+    (max_cpus, cpu-id, interrupts, function-*) and panics with "CPU configuration in device tree
+    is invalid" on a non-Apple tree. The native ArmCpu owns the cores instead, so the match name
+    is changed in the personality plist that travels in the prelinked kernel. The replacement has
+    the same length, so nothing in the image moves.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        kernel = Path(tmp) / 'kernel.macho'
+        run_mtool(['mcopy', '-n', '-o', '-i', str(image), '::/EFI/UniXNU/Payloads/kernel.macho', str(kernel)])
+        data = bytearray(kernel.read_bytes())
+        anchor = data.find(b'<key>AppleARMCPU</key>')
+        if anchor < 0:
+            raise SystemExit('AppleARMCPU personality not found in the prelinked kernel')
+        window = data.find(b'<key>IONameMatch</key><string>cpu</string>', anchor, anchor + 600)
+        if window < 0:
+            raise SystemExit('AppleARMCPU IONameMatch is not in the expected form')
+        at = window + len(b'<key>IONameMatch</key><string>')
+        data[at:at + 3] = b'xpu'
+        kernel.write_bytes(data)
+        run_mtool(['mcopy', '-o', '-i', str(image), str(kernel), '::/EFI/UniXNU/Payloads/kernel.macho'])
+    print('AppleARMCPU personality: IONameMatch cpu -> xpu (the native ArmCpu owns /cpus)')
 
 
 def main():
@@ -60,6 +89,7 @@ def main():
         (stage / 'EFI/UniXNU/BOOTUNIXNU').touch()
     run_mtool(['mcopy', '-i', str(image), '-s', '-o', '-Q', '-m', str(stage / 'EFI'), '::/'])
     shutil.rmtree(stage)
+    neutralize_apple_cpu(image)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

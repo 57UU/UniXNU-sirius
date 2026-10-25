@@ -10,6 +10,12 @@ struct bp_display {
   char previous[48][BP_COLS];
   uint32_t colors[48][2];
 };
+// Keep the first rows clear of the panel cut-out: the reference phone (Mi 8 SE) has a notch over
+// roughly the top 4% of the frame, and row 0 is drawn at y=0. The inset is derived from the frame
+// height so it follows any panel geometry.
+static unsigned bp_top_inset(const struct bp_display *d) {
+  return d->height / 24;
+}
 static void bp_clear(struct bp_display *d) {
   if (!d->bound) return;
   for(unsigned y=0;y<d->height;++y) {
@@ -23,7 +29,8 @@ static void bp_clear(struct bp_display *d) {
 // repaints the row.
 static void bp_line_bg(struct bp_display *d, unsigned row, const char *text, uint32_t color, uint32_t background) {
   if (__atomic_load_n(&d->yield_requested,__ATOMIC_ACQUIRE)) return;
-  if (!d->bound || row >= 48 || (row+1)*14*d->scale >= d->height) return;
+  unsigned inset = bp_top_inset(d);
+  if (!d->bound || row >= 48 || inset + (row+1)*14*d->scale >= d->height) return;
   unsigned cols = d->width / (6*d->scale);
   if (cols >= BP_COLS) cols = BP_COLS-1;
   // Cache is only an output optimization. All framebuffer stores are bounded
@@ -48,7 +55,7 @@ static void bp_line_bg(struct bp_display *d, unsigned row, const char *text, uin
       for (unsigned dx = 0; dx < 6; ++dx)
         for (unsigned sy = 0; sy < d->scale; ++sy)
           for (unsigned sx = 0; sx < d->scale; ++sx) {
-            uintptr_t at = d->frame + (uintptr_t)(row*14*d->scale+y*d->scale+sy)*d->stride +
+            uintptr_t at = d->frame + (uintptr_t)(inset+row*14*d->scale+y*d->scale+sy)*d->stride +
                            (x*6*d->scale+dx*d->scale+sx)*4;
             *(volatile uint32_t *)at = dx < 5 && ((bits >> dx)&1) ? color : background;
           }

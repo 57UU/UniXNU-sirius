@@ -639,7 +639,10 @@ void boot_progress_bind(uintptr_t base,unsigned w,unsigned h,unsigned rb,unsigne
   if (base >= 0xffff000000000000ULL && depth == 32 && w >= 720 && w <= 4096 &&
       h >= 560 && h <= 4096 && rb >= w*4 && rb <= 65536 &&
       base <= UINTPTR_MAX-(uint64_t)h*rb) {
-    display.frame=base;display.width=w;display.height=h;display.stride=rb;display.scale=w>=2160 && h>=1400?3:1;
+    display.frame=base;display.width=w;display.height=h;display.stride=rb;
+    // Readable at arm's length on a 1080-wide phone panel: one pixel per font pixel is unreadable
+    // there, and two still leaves 90 columns.
+    display.scale=w>=2160 && h>=1400?3:(w>=1000?2:1);
     memset(display.previous,0xff,sizeof(display.previous));
     // Terminate the sentinels before strcmp.
     for(unsigned i=0;i<48;++i) display.previous[i][BP_COLS-1]=0;

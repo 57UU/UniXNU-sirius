@@ -217,6 +217,10 @@ IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
     }
   }
   armcpu_probe_accepted = armcpu_probe_accepted + 1;
+  // Outrank the prelinked AppleARMCPU personality (IONameMatch "cpu" prefix match, probe score
+  // 0x64) so the native CPU driver owns the /cpus nubs instead of Apple's, whose start validates
+  // an Apple-shaped /cpus and panics on this device tree.
+  if (score != nullptr) { *score += 40000; }
   return IOCPU::probe (provider, score);
 }
 
@@ -406,6 +410,7 @@ bool ArmCpu::start (IOService *provider)
   memcpy (&physical, reg->getBytesNoCopy (), sizeof (physical));
   logicalId = static_cast<uint32_t> (ml_get_cpu_number (physical));
   secondary = logicalId != static_cast<uint32_t> (ml_get_boot_cpu_number ());
+  IOLog ("ArmCpu: start physical=%x logical=%u secondary=%u\n", physical, logicalId, secondary ? 1 : 0);
   if (secondary) {
     if (!IOCPU::start (provider)) { return false; }
     armcpu_smp_step[logicalId] = 1;
