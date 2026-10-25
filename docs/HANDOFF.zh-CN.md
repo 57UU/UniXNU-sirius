@@ -549,3 +549,43 @@ USB step=68 gcc=f8222000 clk=00000001 smmu=03030303 pll=17171717 dwc=5533300a
 
 至此 USB 只剩 PHY 这一环；GDSC、AXI/master/sleep/mock_utmi 时钟、SMMU guard（SID 0x740）、
 DWC3 识别与软复位、EP0 之前的全部步骤都已验证通过。
+
+### USB 最后一环：EP0 不应答（2026-10-26 02:10）
+
+进展到：**主机能看到设备**（`new high-speed USB device`），说明 PHY、DWC3、上拉、连接都对了。
+但主机读不到描述符：
+
+```
+usb 1-2.2: device descriptor read/64, error -110
+usb 1-2-port2: unable to enumerate USB device
+```
+
+面板原始事件（只保留最后两个事件字）：
+
+```
+USB step=76 gcc=00000201 clk=00000101 smmu=00000014 pll=00000000 dwc=00004181
+```
+
+解码：`0x101` = USB reset 设备事件，`0x201` = connect-done 设备事件，共 20 个事件；
+`dwc=0x4181` = 16769 次内联 poll（轮询确实在跑）。**没有任何传输事件**，
+即 EP0 的 SETUP TRB 从未被控制器消费。
+
+已试过并排除：
+
+- 内联轮询不足（改成 RUN 后连续 6 秒 1ms 粒度 poll，poll 计数证明在跑）；
+- connect-done 之后没有重新 arm setup TRB（已加 `ud_start_setup()` + `DALEPENA=0x3`，仍无传输事件）；
+- PHY 未就绪（先修好了：`0x1a4` bit0 core-ready / `0x1ac` bit5 lock）。
+
+下一批要查的（按可能性）：
+
+1. **`ud_epcmd` 的 DEPCMD 参数**：`DEPSTARTCFG`/`SETEPCONFIG` 的 param0/param1 位域是否与
+   DWC3 3.30a 一致（尤其 `SETTRANSFRESOURCE` 的 fifo 号、`XferComplete` 使能位）；
+   建议把 `DEPCMD(0)` 与 `DEPCMDPAR0/1/2(0)` 的读回值打到面板，确认命令真的被接受；
+2. **setup TRB 的地址/属性**：`TRB_HWO|LST|ISP_IMI|IOC` 的组合，以及 `TRBCTL_SETUP` 是否要求
+   只有 HWO+IOC（部分 DWC3 版本不接受 ISP/IMI 用于 control setup）；
+3. **DCFG 的速度位**：connect-done 里没按 `speed` 设置 `DCFG.Speed`（目前只清了低 7 位），
+   高/全速不匹配会让 EP0 包长错误；
+4. `GCTL` 的 `PrtCapDir`/`DisScramble` 等位是否与 UTMI 模式匹配。
+
+其中 1 和 2 最可能。建议下一次改动：在 connect-done 后把 `DEPCMD(0)`、`DEPCMDPAR0(0)`、
+`DSTS`、`DCTL` 打到面板，并尝试用"仅 HWO+IOC"的 TRB 属性重新 arm 一次。

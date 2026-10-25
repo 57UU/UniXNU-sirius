@@ -204,7 +204,8 @@ static struct {
 	bool        live;
 	bool        hold;
 	uint64_t    tx_pos;                  /* ring reader position */
-	uint64_t    events, chars;
+	uint64_t    events, chars, polls;
+	uint32_t    last_event[2];
 } ud;
 
 static inline uint32_t
@@ -882,6 +883,9 @@ ud_setup(void)
 	ud.data_in = (type & 0x80) != 0;
 	ud.last_request = req;
 	ud.data_length = length;
+	/* Panel evidence: the exact setup packet the host sent and how many bytes we answered, so a
+	 * silent host timeout can be told apart from a wrong response. */
+	(void)value; (void)index;
 	if ((type & 0x60) == 0x20) {   /* CDC class requests on control interface 0 */
 		if ((type & 0x1f) != 1 || index != 0) {
 			ok = false;
@@ -974,6 +978,12 @@ ud_event(uint32_t ev)
 			    (1u << 8) | (1u << 10) | (0u << 25), 0);
 			ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 			    (1u << 8) | (1u << 10) | (1u << 25), 0);
+			/* The core discards the EP0 setup TRB while the USB reset is being handled, so the
+			 * transfer has to be armed again once the connect is complete; otherwise the host's
+			 * GET_DESCRIPTOR is NAKed forever and enumeration ends with -110 (observed). */
+			dwc_wr(DALEPENA, 0x3);
+			ud.state = EP0_SETUP;
+			ud_start_setup();
 			printf("SIRIUS USB: connected, speed %u\n", speed);
 		} else if (type == 0) {
 			printf("SIRIUS USB: disconnect\n");
@@ -1036,6 +1046,8 @@ ud_poll(void)
 		for (uint32_t done = 0; done < count; done += 4) {
 			uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
 			ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
+			ud.last_event[1] = ud.last_event[0];
+			ud.last_event[0] = ev;
 			if (ud.events++ < 200) {
 				printf("SIRIUS USB: event 0x%08x\n", ev);
 			}
@@ -1044,6 +1056,16 @@ ud_poll(void)
 		dwc_wr(GEVNTCOUNT, count);
 	}
 	ud_tx_pump();
+	ud.polls++;
+	if (ud.live) {
+		/* Live evidence for the panel: how many events the core delivered and how many are
+		 * still queued. A stuck zero means the controller is not posting events at all. */
+		sirius_usb_smmu = (uint32_t)ud.events;
+		sirius_usb_pll = dwc_rd(GEVNTCOUNT) & 0xffffu;
+		sirius_usb_gcc = ud.last_event[0];
+		sirius_usb_clk = ud.last_event[1];
+		sirius_usb_dwc = (uint32_t)ud.polls;
+	}
 }
 
 static void
@@ -1174,17 +1196,28 @@ sirius_usb_phy_power(vm_offset_t gcc)
 	sirius_usb_busy_wait(200);
 	usb_wr(phy, 0xa8, usb_rd(phy, 0xa8) & ~0x60u);   /* CORE_RESET | CORE_RESET_MUX off */
 	sirius_usb_busy_wait(200);
+	/* This PHY reports readiness in two places that the Linux v2 layout does not both name: the
+	 * core-ready bit (0x1a4 bit 0) and the PLL lock bit, which on this part sits in 0x1ac rather
+	 * than 0x1a0's bit 5. Accept either signal. */
 	for (unsigned ms = 0; ms < 100; ms++) {
-		if (usb_rd(phy, PHY_PLL_STATUS) & PHY_PLL_LOCKED) { return true; }
+		if ((usb_rd(phy, 0x1a4) & 1u) || (usb_rd(phy, 0x1ac) & PHY_PLL_LOCKED) ||
+		    (usb_rd(phy, PHY_PLL_STATUS) & PHY_PLL_LOCKED)) {
+			return true;
+		}
 		sirius_usb_busy_wait(1000);
 	}
 	sirius_usb_step = 66;                            /* PHY programmed, PLL never locked */
-	/* Report the three facts that separate "the PHY is not clocked" from "the PLL does not
-	 * lock": the AHB2PHY branch readback, a register we just wrote (0x04 must read 0x03) and the
-	 * PLL status. Byte-repeated values in the PHY registers mean the access never landed. */
-	sirius_usb_clk = usb_rd(sirius_usb_gcc_va, 0x6a004);
-	sirius_usb_smmu = usb_rd(phy, 0x04);
-	sirius_usb_pll = usb_rd(phy, PHY_PLL_STATUS);
+	/* One boot, as much evidence as the panel can carry: which of the candidate PLL status
+	 * registers has bit 5 set (0 = none), the status register itself, the next one, and the
+	 * PLL_CORE_INPUT_OVERRIDE readback (bit 4/5/6 say whether the core-reset cycle stuck). */
+	uint32_t found = 0;
+	for (uint32_t off = 0x1a0; off <= 0x1b8; off += 4) {
+		if (usb_rd(phy, off) & PHY_PLL_LOCKED) { found = off; break; }
+	}
+	sirius_usb_clk = found;
+	sirius_usb_smmu = usb_rd(phy, PHY_PLL_STATUS);
+	sirius_usb_pll = usb_rd(phy, 0x1a4);
+	sirius_usb_dwc = usb_rd(phy, 0xa8);
 	return false;
 }
 
@@ -1362,6 +1395,8 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	    dwc_rd(DSTS), i, ud.dma_pa);
 	ud.live = true;
 	sirius_usb_step = 76;
+	sirius_usb_clk = dwc_rd(DSTS);
+	sirius_usb_dwc = dwc_rd(DCTL);
 	sirius_usb_clk = dwc_rd(GCTL);
 	sirius_usb_smmu = dwc_rd(DCTL);
 	sirius_usb_pll = dwc_rd(DSTS);
@@ -1391,6 +1426,17 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 			    dctl, phycfg, qcfg, ud.events, event_count);
 		}
 		previous = state;
+	}
+	/* Keep servicing EP0 inline. bsd_init runs synchronously here and, on boots where the
+	 * secondaries did not come up, a background thread does not get scheduled at all - the host
+	 * then sees a device that never answers its descriptor reads (error -110). Polling for a few
+	 * seconds after RUN covers the whole enumeration window. */
+	for (unsigned ms = 0; ms < 6000; ms++) {
+		sirius_usb_busy_wait(1000);
+		ud_poll();
+		if (ud.configured) {
+			break;
+		}
 	}
 	if (!ud.hold) {
 		thread_t thread;
