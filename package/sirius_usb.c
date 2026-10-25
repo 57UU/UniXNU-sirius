@@ -1130,6 +1130,20 @@ sirius_usb_phy_power(vm_offset_t gcc)
 	if (usb_rd(gcc, 0x6a004) & (1u << 31)) {
 		sirius_usb_step = 64;                    /* AHB2PHY branch never left halt */
 		sirius_usb_clk = usb_rd(gcc, 0x6a004);
+		sirius_usb_smmu = usb_rd(gcc, 0x6a004);
+		sirius_usb_pll = usb_rd(gcc, 0x6a000);
+		return false;
+	}
+	/* USB3/2 PHY reference clock (CXO through GCC): the QUSB2 PLL never locks without it.
+	 * SDM845 keeps this branch at 0x8c008 (the SM7250 port assumed 0x8c010, which is not a branch). */
+	usb_wr(gcc, 0x8c008, usb_rd(gcc, 0x8c008) | 1u);
+	for (unsigned ms = 0; ms < 50; ms++) {
+		if (!(usb_rd(gcc, 0x8c008) & (1u << 31))) { break; }
+		sirius_usb_busy_wait(1000);
+	}
+	if (usb_rd(gcc, 0x8c008) & (1u << 31)) {
+		sirius_usb_step = 63;                    /* clkref branch stayed halted */
+		sirius_usb_clk = usb_rd(gcc, 0x8c008);
 		return false;
 	}
 	usb_wr(gcc, 0x12000, 1u);
@@ -1148,19 +1162,28 @@ sirius_usb_phy_power(vm_offset_t gcc)
 		{0x240, 0x30}, {0x244, 0x29}, {0x248, 0xca}, {0x24c, 0x04}, {0x250, 0x03},
 		{0x23c, 0x00},
 	};
-	/* Hold the PHY down with the v2 disable bits while the table is programmed. */
+	/* Hold the PHY down with the v2 disable bits while the table is programmed, and hold the core
+	 * PLL in reset: CORE_PLL_EN_FROM_RESET | CORE_RESET | CORE_RESET_MUX at 0xa8. The Linux v2
+	 * sequence always does this; without it the PLL never leaves reset and PLL_LOCKED stays 0. */
 	usb_wr(phy, PHY_POWERDOWN, usb_rd(phy, PHY_POWERDOWN) | 0x23u);
+	usb_wr(phy, 0xa8, usb_rd(phy, 0xa8) | 0x70u);
 	for (unsigned i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
 		usb_wr(phy, table[i].off, table[i].value);
 	}
 	usb_wr(phy, PHY_POWERDOWN, usb_rd(phy, PHY_POWERDOWN) & ~1u);
+	sirius_usb_busy_wait(200);
+	usb_wr(phy, 0xa8, usb_rd(phy, 0xa8) & ~0x60u);   /* CORE_RESET | CORE_RESET_MUX off */
 	sirius_usb_busy_wait(200);
 	for (unsigned ms = 0; ms < 100; ms++) {
 		if (usb_rd(phy, PHY_PLL_STATUS) & PHY_PLL_LOCKED) { return true; }
 		sirius_usb_busy_wait(1000);
 	}
 	sirius_usb_step = 66;                            /* PHY programmed, PLL never locked */
-	sirius_usb_clk = usb_rd(phy, PHY_POWERDOWN);
+	/* Report the three facts that separate "the PHY is not clocked" from "the PLL does not
+	 * lock": the AHB2PHY branch readback, a register we just wrote (0x04 must read 0x03) and the
+	 * PLL status. Byte-repeated values in the PHY registers mean the access never landed. */
+	sirius_usb_clk = usb_rd(sirius_usb_gcc_va, 0x6a004);
+	sirius_usb_smmu = usb_rd(phy, 0x04);
 	sirius_usb_pll = usb_rd(phy, PHY_PLL_STATUS);
 	return false;
 }

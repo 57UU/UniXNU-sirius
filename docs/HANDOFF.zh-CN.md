@@ -515,3 +515,37 @@ USB step=68 gcc=F8222000 clk=22222222 smmu=00000001 pll=17171717 dwc=5533300a
 
 已完成并可复用的部分（都不需要再试）：GDSC 上电、AXI/master/sleep/mock_utmi 分支、
 SMMU guard（SID 0x740）、DWC3 识别与软复位。
+
+### PHY 进展：可访问、可写、PLL 不锁（2026-10-26 02:05）
+
+补上的两处（都是 Linux v2 序列里缺的）：
+
+1. **PHY 参考时钟分支**：`gcc_usb3_prim_clkref_clk` 在 SDM845/SDM710 是 **`0x8c008`**
+   （移植源自 SM7250 的 `0x8c010` 不是分支寄存器）。已按 halt 检查打开。
+2. **PLL core reset 循环**：v2 配置 `has_pll_override = true`，必须先在
+   `QUSB2PHY_PLL_CORE_INPUT_OVERRIDE(0xa8)` 置 `CORE_PLL_EN_FROM_RESET|CORE_RESET|CORE_RESET_MUX`
+   （`0x70`），释放 POWER_DOWN 后清 `CORE_RESET|CORE_RESET_MUX`（`0x60`），PLL 才会出复位。
+
+面板现状：
+
+```
+USB step=68 gcc=f8222000 clk=00000001 smmu=03030303 pll=17171717 dwc=5533300a
+```
+
+- `clk=1`：AHB2PHY 分支（`0x6a004`）已使能、halt 位为 0；
+- `smmu=03030303`：写进 PHY `0x04` 的 `0x03` 能读回（寄存器可写；读回按字节复制是该 PHY 的行为）；
+- `pll=17171717`：`PLL_STATUS(0x1a0)` bit5 = 0，**PLL 仍未锁定**。
+
+已排除：AHB 时钟没开、寄存器写不进、缺 PLL core reset、缺 clkref 分支。
+剩下的可能：
+
+1. **参考时钟没真正到 PHY**：QUSB2 的 ref 来自 CXO，SDM670 的 DTS 没有 `tcsr` 节点，
+   Linux 走 `se_clk_scheme_default = true`（单端）。若硬件实际是差分方案，PLL 不会锁，
+   需要找 `TCSR_PHY_CLK_SCHEME` 的地址并读一次（叶子寄存器，只读安全）。
+2. **PHY 供电（LDO）**：部分 SDM710 设计里 QUSB2 PHY 有独立 LDO，未上电则 PLL 不锁定，
+   这需要 RPMH/regulator 路径。
+3. `PLL_STATUS` 的偏移在 SDM710 上可能不同：可用只读方式扫 `0x1a0`–`0x1b0` 找 bit5 会变化
+   的那个寄存器（PLL 释放复位后应有跳变）。
+
+至此 USB 只剩 PHY 这一环；GDSC、AXI/master/sleep/mock_utmi 时钟、SMMU guard（SID 0x740）、
+DWC3 识别与软复位、EP0 之前的全部步骤都已验证通过。
