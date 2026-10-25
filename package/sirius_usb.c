@@ -868,6 +868,32 @@ ud_configure(void)
 	}
 }
 
+/* EP0 must be re-configured from scratch after every USB reset: the core clears the endpoint
+ * configuration, so the SETUP TRB is never consumed until DEPSTARTCFG and the two SETEPCONFIG /
+ * SETTRANSFRESOURCE commands have run again. */
+static void
+ud_ep0_config(void)
+{
+	ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0);
+	ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0);
+	ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+	ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0);
+	ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+	/* The CDC bulk/interrupt endpoints have to be re-configured and re-enabled too: writing only
+	 * EP0's bits here cleared DALEPENA for EP_TX, so the host enlisted the device but never got a
+	 * single byte of console data. */
+	ud_epcmd(EP_NOTIFY, DEPCMD_SETEPCONFIG, (3u << 1) | (16u << 3) | (2u << 17),
+	    (1u << 8) | (EP_NOTIFY << 25), 0);
+	ud_epcmd(EP_NOTIFY, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+	ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3),
+	    (1u << 8) | (EP_RX << 25), 0);
+	ud_epcmd(EP_RX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+	ud_epcmd(EP_TX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3) | (1u << 17),
+	    (1u << 8) | (EP_TX << 25), 0);
+	ud_epcmd(EP_TX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
+	dwc_wr(DALEPENA, 0x3u | (1u << EP_RX) | (1u << EP_TX) | (1u << EP_NOTIFY));
+}
+
 static void
 ud_setup(void)
 {
@@ -970,14 +996,12 @@ ud_event(uint32_t ev)
 			ud.configured = false;
 			ud.tx_busy = false;
 			ud.state = EP0_SETUP;
+			ud_ep0_config();
 			ud_start_setup();
 		} else if (type == 2) { /* connect done */
 			uint32_t speed = dwc_rd(DSTS) & 7;
 			/* ep0 max packet: 64 at high/full speed (modify action) */
-			ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
-			    (1u << 8) | (1u << 10) | (0u << 25), 0);
-			ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
-			    (1u << 8) | (1u << 10) | (1u << 25), 0);
+			ud_ep0_config();
 			/* The core discards the EP0 setup TRB while the USB reset is being handled, so the
 			 * transfer has to be armed again once the connect is complete; otherwise the host's
 			 * GET_DESCRIPTOR is NAKed forever and enumeration ends with -110 (observed). */
@@ -1062,8 +1086,9 @@ ud_poll(void)
 		 * still queued. A stuck zero means the controller is not posting events at all. */
 		sirius_usb_smmu = (uint32_t)ud.events;
 		sirius_usb_pll = dwc_rd(GEVNTCOUNT) & 0xffffu;
-		sirius_usb_gcc = ud.last_event[0];
-		sirius_usb_clk = ud.last_event[1];
+		sirius_usb_gcc = (uint32_t)ud.configured;
+		sirius_usb_clk = (uint32_t)ud.tx_busy;
+		sirius_usb_smmu = (uint32_t)ud.chars;
 		sirius_usb_dwc = (uint32_t)ud.polls;
 	}
 }
@@ -1431,10 +1456,13 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	 * secondaries did not come up, a background thread does not get scheduled at all - the host
 	 * then sees a device that never answers its descriptor reads (error -110). Polling for a few
 	 * seconds after RUN covers the whole enumeration window. */
-	for (unsigned ms = 0; ms < 6000; ms++) {
+	for (unsigned ms = 0; ms < 10000; ms++) {
 		sirius_usb_busy_wait(1000);
 		ud_poll();
-		if (ud.configured) {
+		/* Stop once the host has been given the whole pre-boot console mirror; until then the
+		 * pump is the only thing that can move bytes, because the poller thread is not scheduled
+		 * while bsd_init runs synchronously. */
+		if (ud.chars >= pur_ring.total && ud.chars != 0) {
 			break;
 		}
 	}

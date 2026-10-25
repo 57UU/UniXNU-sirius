@@ -589,3 +589,33 @@ USB step=76 gcc=00000201 clk=00000101 smmu=00000014 pll=00000000 dwc=00004181
 
 其中 1 和 2 最可能。建议下一次改动：在 connect-done 后把 `DEPCMD(0)`、`DEPCMDPAR0(0)`、
 `DSTS`、`DCTL` 打到面板，并尝试用"仅 HWO+IOC"的 TRB 属性重新 arm 一次。
+
+### USB 枚举成功（2026-10-26 02:40）
+
+**设备已经能被主机正确识别**：
+
+```
+usb 1-2.2: Product: sirius XNU USB console
+usb 1-2.2: Manufacturer: sirius
+usb 1-2.2: SerialNumber: SIRIUS01
+cdc_acm 1-2.2:1.0: ttyACM0: USB ACM device
+```
+
+也就是说：PHY → DWC3 → 上拉 → 控制传输（描述符/配置）→ CDC 接口绑定，**整条 USB 设备链路已经通了**。
+`/dev/ttyACM0` 会出现，主机侧脚本 `scripts/capture-usb-console.py` 能正常打开。
+
+**但 bulk IN 还没有数据**（抓取 0 字节）。已修的一处真 bug：`ud_ep0_config()` 早先只写
+`DALEPENA = 0x3`（仅 EP0），把 RX/TX/NOTIFY 全关了；现在重置/连接后会重新配置并使能
+全部端点（`0x3 | (1<<EP_RX) | (1<<EP_TX) | (1<<EP_NOTIFY)`）。修完仍然 0 字节。
+
+剩下的排查方向：
+
+1. `ud_tx_pump` 的触发：内联轮询窗口只有 10 秒（窗口太长会把 CPU 独占、面板冻结——已确认是
+   这个原因），主机打开端口可能在窗口之后；而内核线程在 `bsd_init` 同步执行时不一定被调度。
+   建议：把 pump 挂到一个必然被调用的周期性路径上（例如 boot-progress 的刷新里），或者
+   把窗口延长到"环形缓冲被读空为止"但用 `delay()` 而非忙等让出 CPU。
+2. TX TRB 的完成事件：`tx_busy` 是否卡死（第一次 IN 没完成就再也不发）。需要把
+   `tx_busy`/`chars` 打到面板确认（已加字段，但窗口内面板不刷新，需缩短窗口再看）。
+3. 端点描述符与物理端点号是否一致（EP_TX=3 → 0x83）。
+
+注意：内联轮询窗口会独占 CPU 并冻结面板，调试时应保持 ≤10 秒，或改用会睡眠的等待。
