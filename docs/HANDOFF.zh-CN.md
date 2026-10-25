@@ -619,3 +619,49 @@ cdc_acm 1-2.2:1.0: ttyACM0: USB ACM device
 3. 端点描述符与物理端点号是否一致（EP_TX=3 → 0x83）。
 
 注意：内联轮询窗口会独占 CPU 并冻结面板，调试时应保持 ≤10 秒，或改用会睡眠的等待。
+
+### USB 控制通道完成，数据通道仍未通（2026-10-26 02:55）
+
+主机侧已经完全正常：
+
+```
+usb 1-2.2: Product: sirius XNU USB console
+usb 1-2.2: Manufacturer: sirius
+usb 1-2.2: SerialNumber: SIRIUS01
+cdc_acm 1-2.2:1.0: ttyACM0: USB ACM device
+```
+
+并修掉三个真实 bug：
+
+1. **端点地址与物理端点不一致**：描述符原本写 `0x81/0x01/0x82`，而驱动实际配置的是 EP3/EP2/EP5
+   （`0x83/0x02/0x85`）。主机的 IN token 打在从未使能的端点上。已改正。
+2. **高速 bulk 的 `wMaxPacketSize` 必须是 512**：原来写 64，主机会报
+   `bulk endpoint 0x2 has invalid maxpacket 64` 并禁用该端点。已改为 512。
+3. **`ud_ep0_config()` 曾把 `DALEPENA` 只写 `0x3`**（仅 EP0），重置后把 RX/TX/NOTIFY 全关掉。
+   现在会重新配置并使能全部四个端点。
+
+**仍未解决**：bulk IN 一个字节都没有。最后的可观测状态（本轮之前的镜像）：
+
+```
+USB step=76 gcc=00000001 clk=00000000 smmu=00000000 pll=00000000 dwc=0000592d
+```
+
+`gcc=1` = 已配置；`clk=0` = `tx_busy` 没卡死；`smmu=0` = `ud.chars`（**已发送**字节数）为 0
+→ `ud_tx_pump` 里的 `pur_copy` 一直返回 0 → **环形缓冲是空的**。
+
+环形缓冲为空的根因（已定位）：`_cnputc` 的第一行是
+
+```c
+if (boot_progress_active()) { boot_progress_putc(c); return; }
+```
+
+而 `boot-progress=2` 一直开着，所以每个字符都在这里返回，**永远走不到补丁里加的镜像钩子**。
+已在 `package/BootProgress.c` 的 `boot_progress_putc()` 开头直接调用 `sirius_usb_log_char(c)`
+（符号确认存在于内核：`_sirius_usb_log_char @ 0xfffffff0079d0464`），但最近这次刷机后仍未验证
+面板上的 `chars` 是否变正——**下一次上机第一件事就是看 `smmu`（=`ud.chars`）**：
+
+- 若 `smmu>0`：镜像生效，问题在 TX TRB（`ud_start_trb(EP_TX, …)` 的完成事件），
+  检查 `TRBCTL_NORMAL` 参数、`UD_TX` 地址与 512 字节包长；
+- 若 `smmu=0`：说明 `boot_progress_putc` 也不是面板文本的来源，需要改为在
+  `serial_console.c` 的 `_cnputc` **最开头**（`boot_progress_active()` 判断之前）插入钩子——
+  这是补丁 `patches/xnu/sirius-usb-console.patch` 的下一次修改点。

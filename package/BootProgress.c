@@ -662,6 +662,12 @@ void boot_progress_bind(uintptr_t base,unsigned w,unsigned h,unsigned rb,unsigne
   release();
 }
 void boot_progress_putc(char c) {
+  // The kernel console sends every character here while this panel is active (serial_console.c
+  // returns before its own mirror hook), so the USB console mirror is fed from this path too.
+  {
+    extern void sirius_usb_log_char(char);
+    sirius_usb_log_char(c);
+  }
   if (!enabled || !take()) return;
   bp_char(&state,c);
   unsigned now=seconds();

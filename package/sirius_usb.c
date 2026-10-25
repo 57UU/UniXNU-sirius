@@ -798,10 +798,16 @@ static const uint8_t ud_cfg_desc[67] = {
 	5, 0x24, 0x01, 0x00, 1,                         /* call management: data iface 1 */
 	4, 0x24, 0x02, 0x02,                            /* ACM: line coding/control-line requests */
 	5, 0x24, 0x06, 0, 1,                            /* union: control 0, data 1 */
-	7, 5, 0x82, 0x03, 0x10, 0x00, 16,               /* ep 0x82 interrupt IN, 16 bytes */
+	/* The addresses must name the physical endpoints this driver actually configures:
+	 * 0x85 = EP5 interrupt IN, 0x83 = EP3 bulk IN, 0x02 = EP2 bulk OUT. Advertising 0x82/0x81/0x01
+	 * sent the host's IN tokens to endpoints that were never enabled, so the port existed but the
+	 * console mirror never left the device. */
+	7, 5, 0x85, 0x03, 0x10, 0x00, 16,               /* ep 0x85 interrupt IN, 16 bytes */
 	9, 4, 1, 0, 2, 0x0a, 0x00, 0x00, 0,             /* data iface 1 alt 0: bulk IN/OUT */
-	7, 5, 0x81, 0x02, 0x40, 0x00, 0,                /* ep 0x81 bulk IN, 64 */
-	7, 5, 0x01, 0x02, 0x40, 0x00, 0,                /* ep 0x01 bulk OUT, 64 */
+	/* High-speed bulk endpoints must advertise 512 bytes: with 64 the host logs
+	 * "bulk endpoint 0x2 has invalid maxpacket 64" and never issues an IN token. */
+	7, 5, 0x83, 0x02, 0x00, 0x02, 0,                /* ep 0x83 bulk IN, 512 */
+	7, 5, 0x02, 0x02, 0x00, 0x02, 0,                /* ep 0x02 bulk OUT, 512 */
 };
 static uint8_t ud_line_coding[7] = {
 	0x00, 0xc2, 0x01, 0x00, 0, 0, 8,                /* 115200 8N1 (informational on USB) */
@@ -1456,7 +1462,7 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	 * secondaries did not come up, a background thread does not get scheduled at all - the host
 	 * then sees a device that never answers its descriptor reads (error -110). Polling for a few
 	 * seconds after RUN covers the whole enumeration window. */
-	for (unsigned ms = 0; ms < 10000; ms++) {
+	for (unsigned ms = 0; ms < 45000; ms++) {
 		sirius_usb_busy_wait(1000);
 		ud_poll();
 		/* Stop once the host has been given the whole pre-boot console mirror; until then the
