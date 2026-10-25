@@ -5,3 +5,4 @@
 # boot progress) and in its own sources (drivers/ArmCpu, drivers/DarwinBoot, package/).
 # A board change goes here when it must be a patch; follow
 # https://unixnu.com/xnu/source-and-patches#add-a-patch to export and order it.
+sirius-usb-console.patch
