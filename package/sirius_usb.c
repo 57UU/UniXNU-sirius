@@ -1288,6 +1288,7 @@ volatile uint32_t sirius_usb_gcc;       /* GCC_USB30_PRIM_GDSCR */
 volatile uint32_t sirius_usb_smmu;      /* SMMU guard result, 1 = pass */
 volatile uint32_t sirius_usb_dwc;       /* DWC3 GSNPSID */
 volatile uint32_t sirius_usb_dsts;      /* DWC3 DSTS */
+volatile uint32_t sirius_usb_clk;       /* (master|cfg|aggre) CBCR, bit31 = clock off */
 
 void
 sirius_usb_console_start(void)
@@ -1295,8 +1296,10 @@ sirius_usb_console_start(void)
 	int enabled = 0;
 	int hold = 0;
 	int bind_smmu = 0;
+	int power = 0;
 
 	PE_parse_boot_argn("sirius_usb", &enabled, sizeof(enabled));
+	PE_parse_boot_argn("sirius_usb_power", &power, sizeof(power));
 	PE_parse_boot_argn("sirius_usb_hold", &hold, sizeof(hold));
 	PE_parse_boot_argn("sirius_usb_smmu", &bind_smmu, sizeof(bind_smmu));
 	ud.hold = hold != 0;
@@ -1324,6 +1327,71 @@ sirius_usb_console_start(void)
 	    sleep, mock, clkref);
 	if (gdscr & (1u << 31)) {
 		sirius_usb_step = 3;
+	}
+	if (power != 0 && !(gdscr & (1u << 31))) {
+		/* Experiment: ask the USB GDSC to power on the way Linux' gdsc_enable does, by clearing
+		 * SW_COLLAPSE and polling the power-on status bit. The result is what the panel's gcc
+		 * field then shows: bit 31 set means the parent (CX) rail is still up and only this domain
+		 * was collapsed; bit 31 clear after 200 ms means the parent is gone and a regulator/RPMH
+		 * path is needed. Nothing else is touched in this mode. */
+		usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+		uint32_t now = gdscr;
+		for (unsigned ms = 0; ms < 200; ms++) {
+			now = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+			if (now & (1u << 31)) {
+				break;
+			}
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_gcc = now;
+		printf("SIRIUS USB: GDSC power-on %s gdscr %08x -> %08x\n",
+		    (now & (1u << 31)) ? "PASS" : "timeout", gdscr, now);
+		if (power == 1) {
+			sirius_usb_park(hold);
+			return;
+		}
+		gdscr = now;
+		if (power >= 3) {
+			/* SDM710 branch clocks, offsets from the SDM845 family driver: the USB30 master,
+			 * sleep, mock_utmi and PHY aux branches. The cfg_noc/aggre offsets this driver
+			 * inherited are the SM7250 ones and read back as "clock off" here, so the gate below
+			 * only reports them instead of refusing. */
+			static const uint32_t branches[] = {0xf00c, 0xf010, 0xf014, 0xf04c};
+			for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
+				uint32_t v = usb_rd(gcc, branches[i]);
+				usb_wr(gcc, branches[i], v | 1u);
+			}
+			for (unsigned ms = 0; ms < 100; ms++) {
+				unsigned off = 0;
+				for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
+					if (usb_rd(gcc, branches[i]) & (1u << 31)) { off++; }
+				}
+				if (off == 0) { break; }
+				sirius_usb_busy_wait(1000);
+			}
+			/* A branch whose halt bit never clears means its source is not running; touching the
+			 * DWC3 with a dead AXI clock stalls the bus (the kernel rebooted on the first attempt).
+			 * Report the mask and stop instead of poking the controller. */
+			uint32_t halted = 0;
+			for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
+				if (usb_rd(gcc, branches[i]) & (1u << 31)) { halted |= 1u << i; }
+			}
+			if (halted != 0) {
+				sirius_usb_clk = 0x80000000u | halted;
+				printf("SIRIUS USB: branch clocks halted mask=%x; controller untouched\n", halted);
+				sirius_usb_park(hold);
+				return;
+			}
+			printf("SIRIUS USB: branches master=%08x sleep=%08x utmi=%08x aux=%08x\n",
+			    usb_rd(gcc, 0xf00c), usb_rd(gcc, 0xf010), usb_rd(gcc, 0xf014), usb_rd(gcc, 0xf04c));
+		}
+		master = usb_rd(gcc, GCC_USB30_PRIM_MASTER);
+		cfg = usb_rd(gcc, GCC_CFG_NOC_USB3_PRIM);
+		aggre = usb_rd(gcc, GCC_AGGRE_USB3_PRIM);
+		sirius_usb_clk = master | cfg | aggre;
+		if (power >= 3) {
+			master = cfg = aggre = 0;   /* reported through sirius_usb_clk, not enforced */
+		}
 	}
 	if (!(gdscr & (1u << 31)) || ((master | cfg | aggre) & (1u << 31))) {
 		printf("SIRIUS USB: clocks/power unavailable; controller untouched\n");

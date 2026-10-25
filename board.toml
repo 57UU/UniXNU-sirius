@@ -91,7 +91,9 @@ kernel_args = [
   "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
   "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
   "sirius_usb_hold=1",              # first bring-up: hold in bsd_init so the host can capture the backlog
-  "sirius_usb_force=1",             # skip the GCC power gate and SMMU guard: the controller is up from fastboot
+  # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).
+  #                                 # 2/3/4 additionally touch the branch clocks; on SDM710 that stalls the
+  #                                 # bus and reboots the phone unless the clock sources are programmed first.
 ]
 
 # The platform identity seed (--unique-chip-id) is not stored in any repository; the first boot

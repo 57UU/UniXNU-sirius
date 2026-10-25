@@ -166,7 +166,7 @@ extern volatile unsigned boot_process_attempts __attribute__((weak_import));
 extern volatile unsigned boot_process_busy __attribute__((weak_import));
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
-extern volatile uint32_t __attribute__((weak_import)) sirius_usb_step,sirius_usb_gcc,sirius_usb_smmu,sirius_usb_dwc,sirius_usb_dsts;
+extern volatile uint32_t __attribute__((weak_import)) sirius_usb_step,sirius_usb_gcc,sirius_usb_smmu,sirius_usb_dwc,sirius_usb_dsts,sirius_usb_clk;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
@@ -385,8 +385,8 @@ static void draw(unsigned now) {
       line(30,b,0xff00ff88);
       // USB console progress (kits/sirius/sirius_usb.c): the console section above is an early
       // snapshot, so the driver's own step counters are what tell whether it reached DWC3.
-      snprintf(b,sizeof(b),"USB step=%u gcc=%08x smmu=%u gsnpsid=%08x dsts=%08x",
-        sirius_usb_step,sirius_usb_gcc,sirius_usb_smmu,sirius_usb_dwc,sirius_usb_dsts);
+      snprintf(b,sizeof(b),"USB step=%u gcc=%08x clk=%08x smmu=%u gsnpsid=%08x",
+        sirius_usb_step,sirius_usb_gcc,sirius_usb_clk,sirius_usb_smmu,sirius_usb_dwc);
       line(29,b,0xff00ff88);
     }
     {

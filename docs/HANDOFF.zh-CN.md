@@ -421,3 +421,30 @@ SMP req=1 run=7 cond=1 boot=0 | c1..c7=step7
 
 建议先把 1 做成一个 `sirius_usb_power=1` 的实验开关，只看 `gcc` 从 `0x222001` 变成
 bit31=1 的什么值，就能判断父域是否还在。
+
+### USB 电源实验结论（2026-10-26 00:45）
+
+通过 `sirius_usb_power=N` 逐步试出来：
+
+| N | 动作 | 结果 |
+| --- | --- | --- |
+| 1 | 清 GDSCR 的 SW_COLLAPSE，轮询 200ms | **安全**。读回 `0x00222001 -> 0xf8222000`，bit31 置位：**父域 CX 还在，纯软件可上电** |
+| 2 | 上电后继续读时钟状态 | **安全**。`clk=80000000`，说明有分支时钟 halt |
+| 3 | 打开 `0xf00c/0xf010/0xf014/0xf04c` 四个分支时钟后继续 | **挂死并重启**（`time=1`） |
+| 4 | 同上但先检查 halt 位，未清零就停手 | **仍然挂死重启** |
+
+结论：**挂死发生在分支时钟寄存器的访问上，不是 DWC3**。SDM710 的 GCC 在父时钟（RCG/PLL）没运行
+时被访问会把总线拖死，所以必须按 Linux 的顺序先把时钟源配好再开分支：
+
+1. 确认 `GPLL0` 在跑（`USB30_PRIM_MASTER_CLK_SRC` 的父时钟）；
+2. 配 `USB30_PRIM_MASTER_CLK_SRC`（`cmd_rcgr = 0xf018`）与 `USB30_PRIM_MOCK_UTMI_CLK_SRC`
+   （SDM845 是 `0xf030`），走 `clk_rcg2` 的 RCG_CFG/RCG_MND 流程；
+3. 再开 `gcc_usb30_prim_master_clk`(0xf00c)、`sleep`(0xf010)、`mock_utmi`(0xf014)；
+4. QUSB2 PHY（`0x88e2000`）上电；
+5. 最后 DWC3。
+
+注意：`GCC_CFG_NOC_USB3_PRIM(0xf07c)` 和 `GCC_AGGRE_USB3_PRIM(0xf080)` 这两个偏移是 SM7250 的，
+SDM845 同族里 `cfg_noc_usb3_prim_axi_clk` 在 `0x502c`、`aggre_usb3_prim_axi_clk` 在 `0x8201c`，
+SDM710 很可能也不同，不要再拿它们做门禁（`power>=3` 已改为只报告）。
+
+默认命令行已去掉 `sirius_usb_power`，手机回到"停在 bsd_init"的安全状态。
