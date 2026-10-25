@@ -41,6 +41,17 @@ static struct {
 	char        buffer[PURing_SIZE];
 	uint64_t    total;
 } pur_ring;
+/* Boot-progress evidence: the panel's console section is an early snapshot, so the driver
+ * publishes its progress as globals that package/BootProgress.c draws on its own row. */
+volatile uint32_t sirius_usb_step;      /* 1 enabled, 2 GCC mapped, 3 power ok, 4 SMMU mapped,
+                                         * 5 guard ok, 6 DWC3 mapped, 7 gadget started, 8 connected */
+volatile uint32_t sirius_usb_gcc;       /* GCC_USB30_PRIM_GDSCR */
+volatile uint32_t sirius_usb_smmu;      /* SMMU guard result, 1 = pass */
+volatile uint32_t sirius_usb_dwc;       /* DWC3 GSNPSID */
+volatile uint32_t sirius_usb_dsts;      /* DWC3 DSTS */
+volatile uint32_t sirius_usb_clk;       /* (master|cfg|aggre) CBCR, bit31 = clock off */
+volatile uint32_t sirius_usb_pll;       /* GPLL0 enable/status (GCC 0x52000) */
+
 static uint32_t _Atomic pur_lock;
 static uint64_t _Atomic pur_dropped;
 static bool pur_live;                   /* set once the TX thread streams */
@@ -1131,6 +1142,10 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 		return;
 	}
 	ud.dma_pa = pa;
+	sirius_usb_step = 70;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 	for (unsigned off = 0; off < UD_SIZE; off += PAGE_SIZE) {
 		ppnum_t page = pmap_find_phys(kernel_pmap, (addr64_t)(ud.dma + off));
 		if (!page || ptoa_64(page) != ud.dma_pa + off) {
@@ -1171,6 +1186,10 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	if (!(dwc_rd(DSTS) & DSTS_DEVCTRLHLT)) {
 		return;
 	}
+	sirius_usb_step = 71;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 	dwc_wr(GUSB2PHYCFG0, usb2phy &
 	    ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
 	dwc_wr(GUSB3PIPECTL0, usb3pipe & ~GUSB3PIPECTL_SUSPHY);
@@ -1187,11 +1206,19 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	if (dwc_rd(DCTL) & DCTL_CSFTRST) {
 		return;
 	}
+	sirius_usb_step = 72;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 
 	qs = dwc + QSCRATCH_OFFSET;
 	printf("SIRIUS USB: QSCRATCH %p (wrapper map %p + 0x%x)\n",
 	    (void *)qs, (void *)dwc, QSCRATCH_OFFSET);
 	sirius_usb_select_utmi_clk(qs);
+	sirius_usb_step = 73;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 
 	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
 	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
@@ -1213,6 +1240,10 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	if (ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) { return; }
 	printf("SIRIUS USB: ep0 in resources ready\n");
 	dwc_wr(DALEPENA, 0x3);
+	sirius_usb_step = 74;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 	printf("SIRIUS USB: ep0 enabled\n");
 
 	uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL);
@@ -1224,6 +1255,10 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	printf("SIRIUS USB: QSCRATCH after HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 	    usb_rd(qs, QSCRATCH_HS_PHY_CTRL),
 	    usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
+	sirius_usb_step = 75;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 
 	ud_start_setup();
 	printf("SIRIUS USB: setup TRB armed before RUN (%u retries)\n",
@@ -1241,6 +1276,10 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	printf("SIRIUS USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n",
 	    dwc_rd(DSTS), i, ud.dma_pa);
 	ud.live = true;
+	sirius_usb_step = 76;
+	sirius_usb_clk = dwc_rd(GCTL);
+	sirius_usb_smmu = dwc_rd(DCTL);
+	sirius_usb_pll = dwc_rd(DSTS);
 	pur_live = true;
 
 	static const unsigned sample_ms[] = { 0, 1, 10, 100, 500, 1000 };
@@ -1280,16 +1319,6 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	}
 }
 
-/* Boot-progress evidence: the panel's console section is an early snapshot, so the driver
- * publishes its progress as globals that package/BootProgress.c draws on its own row. */
-volatile uint32_t sirius_usb_step;      /* 1 enabled, 2 GCC mapped, 3 power ok, 4 SMMU mapped,
-                                         * 5 guard ok, 6 DWC3 mapped, 7 gadget started, 8 connected */
-volatile uint32_t sirius_usb_gcc;       /* GCC_USB30_PRIM_GDSCR */
-volatile uint32_t sirius_usb_smmu;      /* SMMU guard result, 1 = pass */
-volatile uint32_t sirius_usb_dwc;       /* DWC3 GSNPSID */
-volatile uint32_t sirius_usb_dsts;      /* DWC3 DSTS */
-volatile uint32_t sirius_usb_clk;       /* (master|cfg|aggre) CBCR, bit31 = clock off */
-
 void
 sirius_usb_console_start(void)
 {
@@ -1328,73 +1357,174 @@ sirius_usb_console_start(void)
 	if (gdscr & (1u << 31)) {
 		sirius_usb_step = 3;
 	}
-	if (power != 0 && !(gdscr & (1u << 31))) {
-		/* Experiment: ask the USB GDSC to power on the way Linux' gdsc_enable does, by clearing
-		 * SW_COLLAPSE and polling the power-on status bit. The result is what the panel's gcc
-		 * field then shows: bit 31 set means the parent (CX) rail is still up and only this domain
-		 * was collapsed; bit 31 clear after 200 ms means the parent is gone and a regulator/RPMH
-		 * path is needed. Nothing else is touched in this mode. */
-		usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
-		uint32_t now = gdscr;
-		for (unsigned ms = 0; ms < 200; ms++) {
-			now = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
-			if (now & (1u << 31)) {
-				break;
-			}
+	if (power == 10) {
+		/* Full clock bring-up in the order the experiments established: GDSC, the two AXI branches,
+		 * then the USB30 master branch. The DWC3 is only read (GSNPSID, DCTL, DSTS) and the driver
+		 * parks, so one boot tells whether the controller answers once every clock is running. */
+		if (!(gdscr & (1u << 31))) {
+			usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+			sirius_usb_busy_wait(2000);
+		}
+		sirius_usb_gcc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		usb_wr(gcc, 0x502c, usb_rd(gcc, 0x502c) | 1u);
+		usb_wr(gcc, 0x8201c, usb_rd(gcc, 0x8201c) | 1u);
+		for (unsigned ms = 0; ms < 100; ms++) {
+			uint32_t a = usb_rd(gcc, 0x502c), b = usb_rd(gcc, 0x8201c);
+			if (!(a & (1u << 31)) && !(b & (1u << 31))) { break; }
 			sirius_usb_busy_wait(1000);
 		}
-		sirius_usb_gcc = now;
-		printf("SIRIUS USB: GDSC power-on %s gdscr %08x -> %08x\n",
-		    (now & (1u << 31)) ? "PASS" : "timeout", gdscr, now);
-		if (power == 1) {
+		usb_wr(gcc, 0xf00c, usb_rd(gcc, 0xf00c) | 1u);
+		for (unsigned ms = 0; ms < 100; ms++) {
+			if (!(usb_rd(gcc, 0xf00c) & (1u << 31))) { break; }
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
+		if (dwc == 0) {
+			sirius_usb_step = 55;
 			sirius_usb_park(hold);
 			return;
 		}
-		gdscr = now;
-		if (power >= 3) {
-			/* SDM710 branch clocks, offsets from the SDM845 family driver: the USB30 master,
-			 * sleep, mock_utmi and PHY aux branches. The cfg_noc/aggre offsets this driver
-			 * inherited are the SM7250 ones and read back as "clock off" here, so the gate below
-			 * only reports them instead of refusing. */
-			static const uint32_t branches[] = {0xf00c, 0xf010, 0xf014, 0xf04c};
-			for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
-				uint32_t v = usb_rd(gcc, branches[i]);
-				usb_wr(gcc, branches[i], v | 1u);
-			}
-			for (unsigned ms = 0; ms < 100; ms++) {
-				unsigned off = 0;
-				for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
-					if (usb_rd(gcc, branches[i]) & (1u << 31)) { off++; }
-				}
-				if (off == 0) { break; }
-				sirius_usb_busy_wait(1000);
-			}
-			/* A branch whose halt bit never clears means its source is not running; touching the
-			 * DWC3 with a dead AXI clock stalls the bus (the kernel rebooted on the first attempt).
-			 * Report the mask and stop instead of poking the controller. */
-			uint32_t halted = 0;
-			for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
-				if (usb_rd(gcc, branches[i]) & (1u << 31)) { halted |= 1u << i; }
-			}
-			if (halted != 0) {
-				sirius_usb_clk = 0x80000000u | halted;
-				printf("SIRIUS USB: branch clocks halted mask=%x; controller untouched\n", halted);
-				sirius_usb_park(hold);
-				return;
-			}
-			printf("SIRIUS USB: branches master=%08x sleep=%08x utmi=%08x aux=%08x\n",
-			    usb_rd(gcc, 0xf00c), usb_rd(gcc, 0xf010), usb_rd(gcc, 0xf014), usb_rd(gcc, 0xf04c));
+		sirius_usb_clk = usb_rd(dwc, 0xc120);   /* GSNPSID */
+		sirius_usb_smmu = usb_rd(dwc, DCTL);
+		sirius_usb_pll = usb_rd(dwc, DSTS);
+		sirius_usb_step = 55;
+		sirius_usb_park(hold);
+		return;
+	}
+	if (power == 9) {
+		/* Power the GDSC, then bring up only the two AXI branch clocks the survey located
+		 * (0x502c cfg_noc, 0x8201c aggre). Master, sleep, mock_utmi and the PHY aux branch stay
+		 * untouched, and the DWC3 is not accessed: this step answers whether the AXI branches can
+		 * be enabled at all on this SoC. */
+		if (!(gdscr & (1u << 31))) {
+			usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+			sirius_usb_busy_wait(2000);
 		}
-		master = usb_rd(gcc, GCC_USB30_PRIM_MASTER);
-		cfg = usb_rd(gcc, GCC_CFG_NOC_USB3_PRIM);
-		aggre = usb_rd(gcc, GCC_AGGRE_USB3_PRIM);
-		sirius_usb_clk = master | cfg | aggre;
-		if (power >= 3) {
-			master = cfg = aggre = 0;   /* reported through sirius_usb_clk, not enforced */
+		sirius_usb_gcc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		usb_wr(gcc, 0x502c, usb_rd(gcc, 0x502c) | 1u);
+		usb_wr(gcc, 0x8201c, usb_rd(gcc, 0x8201c) | 1u);
+		for (unsigned ms = 0; ms < 100; ms++) {
+			uint32_t a = usb_rd(gcc, 0x502c), b = usb_rd(gcc, 0x8201c);
+			if (!(a & (1u << 31)) && !(b & (1u << 31))) { break; }
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_clk = usb_rd(gcc, 0x502c);
+		sirius_usb_smmu = usb_rd(gcc, 0x8201c);
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		sirius_usb_step = 54;
+		sirius_usb_park(hold);
+		return;
+	}
+	if (power == 8) {
+		/* Read-only hunt for the USB AXI branch clocks. SDM845 keeps cfg_noc_usb3_prim_axi_clk at
+		 * 0x502c and aggre_usb3_prim_axi_clk at 0x8201c; the offsets this driver inherited from the
+		 * SM7250 port (0xf07c/0xf080) read back as "off". Nothing is written here. */
+		sirius_usb_clk = usb_rd(gcc, 0x502c);
+		sirius_usb_smmu = usb_rd(gcc, 0x8201c);
+		sirius_usb_pll = usb_rd(gcc, 0x5028);
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		sirius_usb_gcc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		sirius_usb_step = 53;
+		sirius_usb_park(hold);
+		return;
+	}
+	if (power == 7) {
+		/* GDSC + master branch (both proven safe), then read the DWC3 identification registers.
+		 * clk/gsnpsid, smmu/DCTL and pll/DSTS land on the panel row, so one boot tells whether the
+		 * core answers after its clock is up. */
+		if (!(gdscr & (1u << 31))) {
+			usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+			sirius_usb_busy_wait(2000);
+		}
+		sirius_usb_gcc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		usb_wr(gcc, 0xf00c, usb_rd(gcc, 0xf00c) | 1u);
+		for (unsigned ms = 0; ms < 50; ms++) {
+			if (!(usb_rd(gcc, 0xf00c) & (1u << 31))) { break; }
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
+		if (dwc == 0) {
+			sirius_usb_step = 52;
+			sirius_usb_park(hold);
+			return;
+		}
+		sirius_usb_clk = usb_rd(dwc, 0xc120);   /* GSNPSID */
+		sirius_usb_smmu = usb_rd(dwc, DCTL);
+		sirius_usb_pll = usb_rd(dwc, DSTS);
+		sirius_usb_step = 52;
+		sirius_usb_park(hold);
+		return;
+	}
+	if (power == 6) {
+		/* Single-step branch enable: only gcc_usb30_prim_master_clk (0xf00c). The read-only survey
+		 * showed its RCG (0xf01c = 0x00100105) already selects GPLL0 with the 240 MHz divider, so
+		 * the source is up and the branch is the only missing piece. Nothing past the branch is
+		 * touched here: the halt bit is reported and the driver parks. */
+		if (!(gdscr & (1u << 31))) {
+			usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+			sirius_usb_busy_wait(2000);
+		}
+		sirius_usb_gcc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		usb_wr(gcc, 0xf00c, usb_rd(gcc, 0xf00c) | 1u);
+		for (unsigned ms = 0; ms < 50; ms++) {
+			if (!(usb_rd(gcc, 0xf00c) & (1u << 31))) { break; }
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		sirius_usb_step = 51;
+		sirius_usb_park(hold);
+		return;
+	}
+	if (power == 5) {
+		/* Read-only survey of the USB clock tree, because writes past the GDSC stall this SoC's bus
+		 * when the sources are not running. Bit 0 of 0x52000 is GPLL0's enable; 0xf018 is the
+		 * USB30_PRIM_MASTER_CLK_SRC command register and 0xf01c its config (source select and
+		 * divider); 0xf00c is the master branch, whose bit 31 means "clock off". */
+		sirius_usb_pll = usb_rd(gcc, 0x52000);
+		sirius_usb_clk = usb_rd(gcc, 0xf018);
+		sirius_usb_smmu = usb_rd(gcc, 0xf01c);
+		sirius_usb_dwc = usb_rd(gcc, 0xf00c);
+		sirius_usb_step = 50;
+		sirius_usb_park(hold);
+		return;
+	}
+	/* USB clock bring-up, in the order hardware testing established: the GDSC power domain, the
+	 * two AXI branches (cfg_noc at 0x502c, aggre at 0x8201c), the USB30 master branch, then the
+	 * sleep and mock_utmi branches the UTMI interface needs. Every branch is halt-checked: if bit 31
+	 * never clears its source is not running, and touching the DWC3 without its AXI clock stalls the
+	 * NoC and reboots the phone (observed twice). */
+	if (!(gdscr & (1u << 31))) {
+		usb_wr(gcc, GCC_USB30_PRIM_GDSCR, gdscr & ~1u);
+		sirius_usb_busy_wait(2000);
+		gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+		sirius_usb_gcc = gdscr;
+	}
+	{
+		static const uint32_t usb_branches[] = {0x502c, 0x8201c, 0xf00c, 0xf010, 0xf014};
+		const unsigned count = sizeof(usb_branches) / sizeof(usb_branches[0]);
+		uint32_t halted = 0;
+		for (unsigned i = 0; i < count; i++) {
+			usb_wr(gcc, usb_branches[i], usb_rd(gcc, usb_branches[i]) | 1u);
+		}
+		for (unsigned ms = 0; ms < 200; ms++) {
+			halted = 0;
+			for (unsigned i = 0; i < count; i++) {
+				if (usb_rd(gcc, usb_branches[i]) & (1u << 31)) { halted |= 1u << i; }
+			}
+			if (halted == 0) { break; }
+			sirius_usb_busy_wait(1000);
+		}
+		sirius_usb_clk = halted;
+		if (halted != 0) {
+			printf("SIRIUS USB: branch clocks halted mask=%x; controller untouched\n", halted);
+			sirius_usb_park(hold);
+			return;
 		}
 	}
-	if (!(gdscr & (1u << 31)) || ((master | cfg | aggre) & (1u << 31))) {
-		printf("SIRIUS USB: clocks/power unavailable; controller untouched\n");
+	if (!(gdscr & (1u << 31))) {
+		printf("SIRIUS USB: GDSC did not power on; controller untouched\n");
 		sirius_usb_park(hold);
 		return;
 	}

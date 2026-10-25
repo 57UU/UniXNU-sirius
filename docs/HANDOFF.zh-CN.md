@@ -448,3 +448,41 @@ SDM845 同族里 `cfg_noc_usb3_prim_axi_clk` 在 `0x502c`、`aggre_usb3_prim_axi
 SDM710 很可能也不同，不要再拿它们做门禁（`power>=3` 已改为只报告）。
 
 默认命令行已去掉 `sirius_usb_power`，手机回到"停在 bsd_init"的安全状态。
+
+### USB 时钟链已打通，卡在 EP0 命令（2026-10-26 01:15）
+
+驱动现在自动完成整套上电（`package/sirius_usb.c`，带 halt 检查，任一步失败就停手）：
+
+```
+GDSC 0xf004 -> cfg_noc 0x502c -> aggre 0x8201c -> master 0xf00c -> sleep 0xf010 -> mock_utmi 0xf014
+```
+
+每步都验证过：
+
+| 面板值 | 含义 |
+| --- | --- |
+| `gcc=f8222000` | GDSC 上电（bit31=1, SW_COLLAPSE=0） |
+| `clk=00000000` | 五个分支时钟全部运行（掩码为 0） |
+| `smmu=00000001` | SMMU guard 通过（stream id 0x740） |
+| `dwc=5533300a` | **DWC3 GSNPSID = v3.30a，控制器应答** |
+| `step=7` | 进入 gadget start |
+
+gadget 内部又加了 70–76 检查点，硬件停在这里：
+
+```
+USB step=73 gcc=f8222000 clk=00102000 smmu=00000000 pll=00520004 dwc=5533300a
+```
+
+- `clk` 是 `GCTL`：`0x00102000`，bits 13:12 = 2 → device mode ✓
+- `smmu` 是 `DCTL`：`0x00000000` → 控制器 halt
+- `pll` 是 `DSTS`：`0x00520004` → `DEVCTRLHLT=1`
+
+step 73 = 软复位完成 + UTMI 时钟选择 + 事件缓冲就绪；卡在随后的 **EP0 命令序列**
+（`DEPSTARTCFG` / `SETEPCONFIG` / `SETTRANSFRESOURCE` 之一返回失败）。
+
+**下一个必需件是 QUSB2 PHY（`0x88e2000`）**：PHY 不上电就没有 PIPE 时钟，DWC3 的端点命令
+永远等不到完成。需要按 `phy-qcom-qusb2.c` 的序列做：AHB2PHY 时钟与 QUSB2PHY 复位（GCC BCR）、
+PHY 的 powerdown/retention 释放、PLL lock 轮询，再回来重放 EP0 命令。
+
+注意：PHY 的 AHB 时钟若没开就去读写 `0x88e2000` 同样会挂总线，所以要先确认
+`GCC_USB_PHY_CFG_AHB2PHY_CLK`（以及 `GCC_QUSB2PHY_PRIM_BCR`）的开法，再动 PHY 寄存器。

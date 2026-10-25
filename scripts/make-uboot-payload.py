@@ -52,11 +52,26 @@ def neutralize_apple_cpu(image):
         kernel = Path(tmp) / 'kernel.macho'
         run_mtool(['mcopy', '-n', '-o', '-i', str(image), '::/EFI/UniXNU/Payloads/kernel.macho', str(kernel)])
         data = bytearray(kernel.read_bytes())
+        # The bundle id appears in several plists, so take the occurrence whose dictionary
+        # actually carries the CPU match rather than the first one in the image. The volume image
+        # is patched in place, so a second run already sees the rewritten name.
+        needle = b'<key>IONameMatch</key><string>cpu</string>'
+        window = -1
+        seen = False
         anchor = data.find(b'<key>AppleARMCPU</key>')
-        if anchor < 0:
+        while anchor >= 0:
+            seen = True
+            candidate = data.find(needle, anchor, anchor + 600)
+            if candidate >= 0:
+                window = candidate
+                break
+            anchor = data.find(b'<key>AppleARMCPU</key>', anchor + 1)
+        if not seen:
             raise SystemExit('AppleARMCPU personality not found in the prelinked kernel')
-        window = data.find(b'<key>IONameMatch</key><string>cpu</string>', anchor, anchor + 600)
         if window < 0:
+            if b'<key>IONameMatch</key><string>xpu</string>' in data:
+                print('AppleARMCPU personality: already neutralised (xpu)')
+                return
             raise SystemExit('AppleARMCPU IONameMatch is not in the expected form')
         at = window + len(b'<key>IONameMatch</key><string>')
         data[at:at + 3] = b'xpu'
