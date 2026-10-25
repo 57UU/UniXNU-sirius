@@ -1,0 +1,52 @@
+# The XNU Linux kernel toolchain, built once into an image.
+#
+# Build context: UniXNU/scripts/linux (the installer only needs its own directory).
+#
+#   podman build --network=host \
+#     --build-arg https_proxy=http://127.0.0.1:7897 --build-arg http_proxy=http://127.0.0.1:7897 \
+#     -t localhost/unixnu-xnu-linux:fedora44 \
+#     -f sirius/containers/xnu-linux/Containerfile UniXNU/scripts/linux
+#
+# or ./scripts/xnu-container.sh build-image
+#
+# Everything the installer touches stays inside this image: /opt/unixnu-linux, the shims it puts
+# in /usr/bin, and the distribution packages it installs. The host is left untouched.
+FROM docker.io/library/fedora:44
+
+# The proxy is supplied at build time and is never baked into a layer: dnf and the source
+# clones of the installer both read these variables.
+ARG http_proxy
+ARG https_proxy
+ENV http_proxy=$http_proxy https_proxy=$https_proxy
+
+# The installer is a Python script; it installs every other dependency itself (dnf path).
+RUN dnf -y install -q python3 \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
+
+# scripts/linux/setup-toolchain.py installs, under /opt/unixnu-linux:
+#   llvm/bin/clang                  LLVM at the pinned commit + llvm-xnu-builtin-type.patch
+#   CommandLineTools/usr/bin        ld (cctools-port 1030.6.3-ld64-956.6), xnu-host-cc, gm4, ...
+#   CommandLineTools/usr/libexec    migcom (bootstrap_cmds)
+#   XcodeDefault.xctoolchain/usr/bin/iig (iig-port)
+#   bin/lzfse                       kernelcache decode
+# and puts the xcrun/plutil/codesign shims in /usr/bin, where xnu's makefiles look for them.
+COPY . /opt/src/linux
+RUN cd /opt/src/linux \
+ && ./setup-toolchain.py -j 32 \
+ && rm -rf /opt/src
+ENV UNIXNU_TOOLCHAIN=/opt/unixnu-linux
+
+# Fail the build here, not at the first kernel build, if any tool the driver checks is missing.
+RUN set -e; for f in /opt/unixnu-linux/llvm/bin/clang \
+                     /opt/unixnu-linux/CommandLineTools/usr/bin/ld \
+                     /opt/unixnu-linux/CommandLineTools/usr/bin/xnu-host-cc \
+                     /opt/unixnu-linux/CommandLineTools/usr/libexec/migcom \
+                     /opt/unixnu-linux/XcodeDefault.xctoolchain/usr/bin/iig \
+                     /opt/unixnu-linux/bin/lzfse \
+                     /usr/bin/xcrun; do \
+      test -x "$f" || { echo "missing $f" >&2; exit 1; }; \
+    done
+
+WORKDIR /work
+CMD ["/bin/bash"]

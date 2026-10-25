@@ -9,4 +9,4 @@
 name = "sdm710"
 kind = "soc"
 git = "https://github.com/57UU/UniXNU-sdm710-common"
-commit = "bd30bd01f38d1d438086a14932fe87ad5cd8d507"
+commit = "9b997c978e954c7c1d2fa7ab07c10981676dd0da"

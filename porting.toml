@@ -387,17 +387,19 @@ procedure = [
 findings = [
   "Format 2 generates kernel.macho.adt from the DTS, so the legacy ADT script is retired; make-uboot-payload.py still finishes the volume because U-Boot needs the EFI binaries inside it.",
   "scripts/build-xnu-4k-baseline.sh is a copy of the UniXNU script with one board deviation: the boot-progress interlock only requires the source crypto provider.",
-  "The legacy build applied patches/xnu/*.patch by glob (56 files); format 2 applies only what the series list names. The two files the ARM64 series omits are native-smp-secondary.patch (required: MAX_CPUS 4 to 8 and Affinity1 core numbering) and sheng-platform-power.patch (SM8550 only). The first now lives in the sdm710 SoC series.",
-  "Moving native-smp-secondary out of filename order into the SoC series changes when it applies relative to the start.s and board_config.h patches; the first kernel build must confirm it still applies cleanly.",
+  "The legacy build applied patches/xnu/*.patch by glob (56 files); format 2 applies only what the series list names, and the ARM64 and OS series assume the two files they omit are present. native-smp-secondary.patch sets MAX_CPUS 8 and Affinity1 core numbering; sheng-platform-power.patch supplies the bsd_init.c block that zzz-boot-progress.patch quotes as context (CONFIG_XNU_SHENG_PMGR is off, so its code compiles to nothing). Both now live in the sdm710 SoC series, which applies before the OS series.",
+  "The first format 2 kernel build on Linux failed at the last patch, zzz-boot-progress.patch, with a bsd_init.c context mismatch: the missing piece was sheng-platform-power.patch, not the moved native-smp-secondary. With both in the SoC series the whole series applies and the kernel prelinks: kernel.macho 50 MB, __TEXT 0xfffffff007004000, 30 kernelcache components, 69294 bindings.",
+  "The kernel step also runs on Linux through UniXNU's toolchain installer, which builds a patched LLVM, cctools-port ld64, MIG, iig and lzfse. That installer writes /opt/unixnu-linux, /usr/bin shims and distribution packages, so this port runs it inside a Podman image (containers/xnu-linux/) and leaves the host untouched. The alternative, Allenwdk/xnu-linux-toolchain, uses the system clang with portable-kalloc-type-builtins.patch and cctools-port, but needs a path-layout adapter for the driver's checks.",
 ]
 completion = [
   "The kernel prelinks against the pinned 21H461 kernelcache, the payload contains the kernel, the ADT and the DarwinBoot driver, and the flashed volume boots from U-Boot.",
 ]
 limits = [
-  "The kernel step needs macOS and Xcode; the board script must be re-based on the upstream script when UniXNU changes it.",
+  "The kernel step needs macOS and Xcode, or the container image with UniXNU's Linux toolchain; the board script must be re-based on the upstream script when UniXNU changes it.",
 ]
 next_action = [
   "Run the new payload once and diff the generated ADT against the legacy one before flashing.",
+  "Boot the prelinked kernel on the phone and record the stage rows; the build side is now reproducible on Linux (container image, see downloads).",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Build and deploy loop, the CI kernel artifact and the payload layout on the vendor partition." },

@@ -62,7 +62,9 @@ machine-checked version of the same facts is `porting.toml`.
 
 ## Building
 
-The kernel step needs macOS + Xcode (the `kernel` workflow in this repository runs it);
+The kernel step needs macOS + Xcode (the `kernel` workflow in this repository runs it) **or** the
+Linux toolchain inside the Podman image of [`containers/xnu-linux/`](containers/xnu-linux/)
+(`./scripts/xnu-container.sh build-image`, then `... run bash -lc './unixnu build kernel -D ../sirius'`);
 everything else builds on Linux against the same UniXNU checkout.
 
 ```sh
