@@ -58,11 +58,15 @@ STATIC UINT64 U64 (CONST VOID *P) { return ReadUnaligned64 ((CONST UINT64 *)P); 
 // space 1:1, so the boot-services-time MMIO works directly.
 // ---------------------------------------------------------------------------
 
-// SGIs 0..15 and the EL1 virtual timer PPI. Qualcomm SDM670/710 wires the virtual timer to
-// GIC PPI 3 (INTID 19), not the architectural PPI 11 (INTID 27) of Apple SoCs; the /cpus
-// timebase and the kernel's armcpu-timer-intid=19 use the same mapping.
+// SGIs 0..15 only. The timer PPI stays disabled here on purpose: ArmCpu installs the per-CPU
+// IRQ handler in its start method and enables INTID 19 itself (armcpu-timer-intid=19). An
+// interrupt that arrives before that dispatches through a NULL IRQ handler in _sleh_irq and
+// faults on an instruction fetch at 0, which is exactly what enabling it here produced.
+// Qualcomm SDM670/710 wire the EL1 virtual timer to GIC PPI 3 (INTID 19), not the architectural
+// PPI 11 (INTID 27) of Apple SoCs; GIC_TIMER_INTID records the mapping for readers and for a
+// future coordinated enable.
 #define GIC_TIMER_INTID     (19)
-#define GIC_SGI_PPI_ENABLE  (0xffffU | (1U << GIC_TIMER_INTID))
+#define GIC_SGI_PPI_ENABLE  (0xffffU)
 
 STATIC
 UINT32
@@ -953,8 +957,9 @@ Boot (
   }
   //
   // The firmware role of the interrupt controller: wake this core's GICv3
-  // redistributor and enable the timer PPI before the hand-off, so the
-  // kernel's scheduler ticks from its first interrupt.
+  // redistributor and route its SGIs before the hand-off. The timer PPI is
+  // deliberately left disabled; ArmCpu enables it after its own handler exists
+  // (see GIC_SGI_PPI_ENABLE).
   //
   {
     EFI_STATUS  GicStatus = PrepareGic ((CONST UINT8 *)Tree, TreeSize);

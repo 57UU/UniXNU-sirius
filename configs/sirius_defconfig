@@ -39,7 +39,14 @@ CONFIG_XNU_ARMVIRT_PLATFORM=n
 # and the CS hash cache. The first-console image has none of them; re-enable each one together
 # with the stage that needs it (storage/root for mockfs and the trust cache, native AES for the
 # storage path) and record the result in porting.toml.
-CONFIG_XNU_NATIVE_ARCH_TIMER=n
+#
+# Do NOT set CONFIG_XNU_NATIVE_ARCH_TIMER=n here. build-xnu-4k-baseline.sh derives it from
+# XNU_ARMCPU when the variable is absent, and the ARM64 profile leaves it on:
+#   NATIVE_ARCH_TIMER=${XNU_NATIVE_ARCH_TIMER:-${XNU_ARMCPU:-0}}
+# At 0, architectural-timer-entry.patch compiles the BCM2837 local interrupt router write into
+# start.s (0x40000040 + cpu*4, the Raspberry Pi local peripherals). That address does not exist
+# on SDM710 and the store aborts before the MMU is on, which looks like a hang right after the
+# entry probe's blue bar with no magenta bar.
 CONFIG_XNU_NATIVE_PAN=n
 CONFIG_XNU_SOURCE_MOCKFS=n
 CONFIG_XNU_TRUST_CACHE_RUNTIME=n

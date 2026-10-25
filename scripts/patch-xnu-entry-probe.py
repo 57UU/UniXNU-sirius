@@ -182,6 +182,10 @@ def assemble_c(source, va, workdir, symbols):
     nm = shutil.which('llvm-nm') or '/opt/homebrew/opt/llvm/bin/llvm-nm'
     # UNIXNU_UEFI is the Mu-Silicium checkout when the unixnu driver runs this script.
     font_dir = Path(os.environ.get('UNIXNU_UEFI') or ROOT / 'uefi-sheng') / 'Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib'
+    if not (font_dir / 'Font.h').is_file():
+        # The board kit vendors the same header (build-boot-progress.py compiles against it), so a
+        # payload build does not need a Mu-Silicium checkout.
+        font_dir = next((p.parent for p in sorted((ROOT / 'kits').glob('*/Font.h'))), font_dir)
     obj, elf, binary = (workdir / name for name in ('panic.o', 'panic.elf', 'panic.bin'))
     definitions = []
     for macro, name, width in (('MAX_MEM', '_max_mem', 8),
