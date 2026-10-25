@@ -182,9 +182,15 @@ pur_copy(uint64_t *pos, char *out, uint32_t max)
 #define UD_DATA         0x1100u         /* ep0 data stage, 512 bytes */
 #define UD_NOTIFY       0x1800u         /* CDC serial-state notification */
 #define UD_NOTIFY_SIZE  10u
+#define UD_RX           0x3000u         /* bulk OUT: host writes land here (echo test) */
+#define UD_ECHO         0x3400u         /* echo reply, copied out of UD_RX */
+#define UD_TRB_RX       0x1060u         /* bulk OUT TRB */
+#define UD_RX_SIZE      512u
 #define UD_TX           0x2000u         /* bulk IN log chunk, 4 KiB */
 #define UD_TX_SIZE      0x1000u
 #define UD_SIZE         0x4000u
+
+static void ud_rx_arm(void);
 
 static struct {
 	vm_offset_t dwc;
@@ -207,6 +213,7 @@ static struct {
 	uint64_t    events, chars, polls;
 	uint32_t    last_event[2];
 	uint32_t    tx_delay_ms;
+	uint64_t    echoes;
 } ud;
 
 static inline uint32_t
@@ -858,6 +865,7 @@ ud_configure(void)
 	}
 	/* Bulk OUT stays enabled but never armed: the host's input NAKs. */
 	dwc_wr(DALEPENA, 0x3u | (1u << EP_RX) | (1u << EP_TX) | (1u << EP_NOTIFY));
+	ud_rx_arm();
 	ud.configured = true;
 	ud.tx_busy = false;
 	ud.notify_busy = false;
@@ -873,6 +881,12 @@ ud_configure(void)
 		ud.notify_busy = true;
 		ud_start_trb(EP_NOTIFY, UD_TRB_NOTIFY, UD_NOTIFY, UD_NOTIFY_SIZE, TRBCTL_NORMAL);
 	}
+}
+
+static void
+ud_rx_arm(void)
+{
+	ud_start_trb(EP_RX, UD_TRB_RX, UD_RX, UD_RX_SIZE, TRBCTL_NORMAL);
 }
 
 /* EP0 must be re-configured from scratch after every USB reset: the core clears the endpoint
@@ -1026,6 +1040,24 @@ ud_event(uint32_t ev)
 	unsigned ep = (ev >> 1) & 0x1f;
 	unsigned type = (ev >> 6) & 0xf;
 	unsigned status = (ev >> 12) & 0xf;
+	if (ep == EP_RX && type == 1) {         /* something arrived from the host */
+		uint32_t n = (ev >> 16) & 0xffffu;
+		if (n > UD_RX_SIZE) {
+			n = UD_RX_SIZE;
+		}
+		ud_sync(UD_RX, UD_RX_SIZE);
+		if (n != 0 && !ud.tx_busy) {
+			for (uint32_t i = 0; i < n; i++) {
+				*(volatile char *)(ud.dma + UD_ECHO + i) =
+				    *(volatile char *)(ud.dma + UD_RX + i);
+			}
+			ud.tx_busy = true;
+			ud.echoes++;
+			ud_start_trb(EP_TX, UD_TRB_TX, UD_ECHO, n, TRBCTL_NORMAL);
+		}
+		ud_rx_arm();
+		return;
+	}
 	if (ep == EP_TX && type == 1) {         /* bulk IN complete */
 		ud.tx_busy = false;
 		return;
@@ -1092,11 +1124,22 @@ ud_poll(void)
 		/* Live evidence for the panel: how many events the core delivered and how many are
 		 * still queued. A stuck zero means the controller is not posting events at all. */
 		sirius_usb_smmu = (uint32_t)ud.events;
-		sirius_usb_pll = dwc_rd(GEVNTCOUNT) & 0xffffu;
+		sirius_usb_pll = (uint32_t)ud.echoes;
 		sirius_usb_gcc = (uint32_t)ud.configured;
 		sirius_usb_clk = (uint32_t)ud.tx_busy;
 		sirius_usb_smmu = (uint32_t)ud.chars;
 		sirius_usb_dwc = (uint32_t)ud.polls;
+	}
+}
+
+/* Called from the boot-progress refresh, which demonstrably keeps running even when the poller
+ * thread is never scheduled: without this the console mirror stops pumping the moment the inline
+ * window closes, and the host sees a port that never delivers a byte. */
+void
+sirius_usb_poll(void)
+{
+	if (ud.live) {
+		ud_poll();
 	}
 }
 

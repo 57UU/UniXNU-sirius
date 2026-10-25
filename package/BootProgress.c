@@ -564,6 +564,12 @@ static void draw(unsigned now) {
 // renders a bounded snapshot without holding the recorder lock across pixels.
 static void refresh(unsigned now) {
   if (__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE)) return;
+  // The USB console poller runs off this refresh: it is the one kernel path that keeps being
+  // scheduled even when a freshly started thread never gets a turn.
+  {
+    extern void sirius_usb_poll(void);
+    sirius_usb_poll();
+  }
   if (resume_after && boot_progress_display_owned && !display.bound && display.frame &&
       now >= __atomic_load_n(&last_scanout_at,__ATOMIC_RELAXED)+resume_after) {
     display.bound=1;

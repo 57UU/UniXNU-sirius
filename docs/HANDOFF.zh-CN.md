@@ -689,3 +689,25 @@ if (boot_progress_active()) { boot_progress_putc(c); return; }
 
 至此 USB 的**控制通道 100% 工作**（枚举、描述符、CDC 绑定、ttyACM 节点），只剩 bulk IN 的
 一次成功传输。这个结论已足够支撑明天一次性定位。
+
+### 回显设施已加，数据仍不动（2026-10-26 03:40）
+
+按"心跳包"思路加了双向自检：`EP_RX`（bulk OUT，`0x02`）始终挂着一个 512 字节的接收 TRB，
+收到数据后立刻在同一字节数上从 `EP_TX`（`0x83`）回送，回显次数显示在面板 `pll` 字段。
+`ud_poll()` 现在还从 boot-progress 的 `refresh()` 里驱动（那是唯一确定会被调度的内核路径）。
+
+实测：主机 `printf "HELLO-ECHO-123\n" > /dev/ttyACM0` 后，回读仍为 0 字节。
+
+**结论性判断**：两个方向都不动字节，且 `DALEPENA`/描述符/端点地址都已正确，最可能的原因
+下沉到"端点命令没有被控制器接受"：
+
+1. `ud_epcmd()` 的返回值从未检查——`DEPCMD(n)` 的 `CMDACT` 位与完成状态没有验证，
+   `SETEPCONFIG`/`SETTRANSFRESOURCE`/`STARTTRANSFER` 可能全部静默失败；
+2. `DEPCMD` 的 param0/param1 位域需按 DWC3 3.30a 复核（端点类型、maxpacket、fifo 号、
+   `XferComplete` 使能）；
+3. 建议下一次上机：把 `DEPCMD(EP_TX)`、`DEPCMD(EP_RX)`、`DEPCMDPAR0/1(EP_TX)` 的读回值
+   直接打到面板，先确认命令被接受，再谈数据。
+
+补充：`GCTL=0x00102000`（device mode）、`DCTL=0x80000000`（RUN）、`DSTS` 有连接状态、
+事件环正常（reset/connect 事件都能收到并处理），说明控制器本身工作正常，问题局限在
+端点命令/传输层。
