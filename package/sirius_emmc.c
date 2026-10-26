@@ -444,6 +444,8 @@ static uint8_t sdma_buffer[512] __attribute__((aligned(4096)));
  * SMR/S2CR while the SMMU is live is not safe from here, and a wrong write hangs the SoC. */
 static uint32_t emmc_smmu_report;
 static uint32_t emmc_smmu_fixed;
+static vm_offset_t emmc_smmu_base;
+volatile uint32_t sirius_emmc_gfsr;
 
 static int
 emmc_smmu_probe(void)
@@ -452,6 +454,9 @@ emmc_smmu_probe(void)
 	if (smmu == 0) {
 		return -1;
 	}
+	emmc_smmu_base = smmu;
+	/* GFSR records global faults (0x48); clear it so anything found later belongs to our transfer. */
+	*(volatile uint32_t *)(smmu + 0x048u) = *(volatile uint32_t *)(smmu + 0x048u);
 	uint32_t idr0 = *(volatile uint32_t *)(smmu + 0x020u);
 	unsigned count = idr0 & 0xffu;
 	if (count == 0 || count > 128) {
@@ -484,6 +489,90 @@ emmc_smmu_probe(void)
 	return -1;
 }
 
+/* ADMA2 with 64-bit addressing is the mode the boot chain uses, and the core may not implement
+ * plain SDMA at all. One descriptor covers the whole 512-byte block: TRAN|VALID|END, length, and
+ * the 64-bit address of the buffer. The table has to be 64-byte aligned. */
+#define ADMA2_TRAN_VALID 0x21u
+#define ADMA2_END 0x02u
+
+static uint8_t adma_desc[128] __attribute__((aligned(128)));
+
+static int
+sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
+{
+	vm_offset_t buf_pa = kvtophys((vm_offset_t)sdma_buffer);
+	vm_offset_t desc_pa = kvtophys((vm_offset_t)adma_desc);
+	if (buf_pa == 0 || desc_pa == 0) {
+		return -1;
+	}
+	if (emmc_clear_command_line() != 0) {
+		return -1;
+	}
+	for (unsigned i = 0; i < 512; i++) {
+		sdma_buffer[i] = 0;
+	}
+	for (unsigned i = 0; i < sizeof(adma_desc); i++) {
+		adma_desc[i] = 0;
+	}
+	uint16_t cmd = (uint16_t)(ADMA2_TRAN_VALID | ADMA2_END);
+	uint16_t len = 512;
+	*(volatile uint16_t *)(adma_desc + 0) = cmd;
+	*(volatile uint16_t *)(adma_desc + 2) = len;
+	*(volatile uint32_t *)(adma_desc + 4) = (uint32_t)buf_pa;
+	*(volatile uint32_t *)(adma_desc + 8) = 0;
+	__asm__ volatile ("dsb sy" ::: "memory");
+
+	/* ADMA2 64-bit addressing: host control DMA select bits[4:3] = 0b11. */
+	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)((sdhci_read8(SDHCI_HOST_CONTROL) & 0x27u) | 0x18u));
+	sdhci_write32(SDHCI_DMA_ADDRESS, (uint32_t)desc_pa);
+	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
+	sdhci_write16(SDHCI_BLOCK_COUNT, 1u);
+	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ | SDHCI_TM_BLOCK_COUNT_ENABLE | SDHCI_TM_DMA);
+	if ((sdhci_read16(SDHCI_TRANSFER_MODE) & (SDHCI_TM_READ | SDHCI_TM_DMA)) !=
+	    (SDHCI_TM_READ | SDHCI_TM_DMA)) {
+		return -1;
+	}
+	if (sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
+	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba) != 0) {
+		return -1;
+	}
+	/* Sample the four DAT line levels while the clock runs: if they never change the card is not
+	 * driving data at all, which is a pad/hardware problem rather than a sampling one. */
+	uint32_t seen = 0;
+	unsigned transitions = 0;
+	uint32_t previous = (sdhci_read32(SDHCI_PRESENT_STATE) >> 20) & 0xfu;
+	for (unsigned i = 0; i < 2000; i++) {
+		uint32_t now = (sdhci_read32(SDHCI_PRESENT_STATE) >> 20) & 0xfu;
+		seen |= 1u << now;
+		if (now != previous) {
+			transitions++;
+			previous = now;
+		}
+		if ((sdhci_read16(SDHCI_INT_STATUS) & SDHCI_INT_TRANSFER_COMPLETE) != 0) {
+			break;
+		}
+		spin_us(50);
+	}
+	ring_puts("EMMC dat seen=");
+	ring_hex(seen, 4);
+	ring_puts(" trans=");
+	ring_dec(transitions);
+	ring_puts("\r\n");
+	if (sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000) <= 0) {
+		ring_puts("EMMC adma2 no TC int=");
+		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
+		ring_puts(" err=");
+		ring_hex(sdhci_read16(SDHCI_ERR_INT_STATUS), 4);
+		ring_puts("\r\n");
+		return -1;
+	}
+	sdhci_write16(SDHCI_INT_STATUS, 0xffffu);
+	for (unsigned i = 0; i < 512; i++) {
+		out[i] = sdma_buffer[i];
+	}
+	return 0;
+}
+
 /* Single-block read over SDMA: the boot chain left the controller in a DMA mode where the buffer
  * port only returns one stale word, so the block is fetched by the data engine into memory
  * instead of through the FIFO. */
@@ -511,8 +600,9 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 	if ((mode & (SDHCI_TM_READ | SDHCI_TM_DMA)) != (SDHCI_TM_READ | SDHCI_TM_DMA)) {
 		return -1;
 	}
-	int cmd_ok = sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
-	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba);
+	uint32_t r1[4] = { 0, 0, 0, 0 };
+	int cmd_ok = sdhci_command_capture((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT |
+	    SDHCI_CMD_RESP_48 | SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba, r1);
 	if (cmd_ok != 0) {
 		ring_puts("EMMC cmd17 fail int=");
 		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
@@ -527,8 +617,15 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 	if (tc <= 0) {
 		ring_puts("EMMC smmu140=");
 		ring_hex(emmc_smmu_report, 8);
+		if (emmc_smmu_base != 0) {
+			sirius_emmc_gfsr = *(volatile uint32_t *)(emmc_smmu_base + 0x048u);
+			ring_puts(" gfsr=");
+			ring_hex(sirius_emmc_gfsr, 8);
+		}
 		ring_puts(" fixed=");
 		ring_dec(emmc_smmu_fixed);
+		ring_puts(" r1=");
+		ring_hex(r1[0], 8);
 		ring_puts(" cmd17 ok, no TC int=");
 		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
 		ring_puts(" err=");
@@ -690,7 +787,7 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
-		int direct_ok = sdhci_read_block_sdma(1, direct);
+		int direct_ok = sdhci_read_block_adma2(1, direct);
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
 		}
