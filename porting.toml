@@ -446,6 +446,7 @@ procedure = [
   "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
+  "The eMMC probe reports every step (controller registers, the clock tree, the response registers around CMD0/CMD1 and each failure) into the USB console ring, which is how the card clock and CMD2 findings above were obtained without a photograph.",
   "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
   "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",
