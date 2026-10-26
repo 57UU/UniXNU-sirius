@@ -1740,3 +1740,54 @@ blr x8
 `emmc_log` 被 clang 内联后，**object 里丢失了大部分字面量字符串**（只剩 `emmc_log_hex`/
 `emmc_log_dec` 的标签），导致整轮启动日志里凡是纯文本行全都消失，误判成"静默挂起"。
 加 `__attribute__((noinline))` 后恢复。
+
+## eMMC 第十一阶段：根挂上了，init 起来了，卡在 exec（2026-10-27）
+
+这一阶段把「能看到」和「能挂载」都解决了，剩下的问题第一次变得**可读**。
+
+### 观测：console 镜像进环
+
+`sirius-console-ring.patch` 在 `console_printbuf_putc` 里把每个内核字符镜像进 USB 环。
+此前 console 在 `bsd_init` 之后就不再喂环，导致所有内核消息（含 panic）都看不见。
+镜像之后一次启动就能看到：
+
+```
+AMFI: queried model name from device tree: iPad7,1
+Security policy loaded: Apple Mobile File Integrity (AMFI)
+AMFI: Enabling developer mode since protected data is not available
+apfs_log_op_with_proc: disk2s1 mounting volume DawnUpdate21H461.J120J121J207J208OS ...
+apfs_log_op_with_proc: disk2s1 mount-complete volume DawnUpdate21H461...OS ...
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+```
+
+即：**APFS 挂上了 OS 卷**（`disk2s1`），AMFI 起来了，`init` 开始 exec launchd。
+
+### 两道门：rootauth 与 registry
+
+1. `rootvp not authenticated after mounting` —— iPadOS 分支 `require_rootauth` 恒真。
+   `patches/xnu/sirius-skip-rootauth.patch` 在 `sirius-skip-rootauth=1` 时记录答案并继续。
+2. `A kext releasing a(n) IOBlockStorageDriver has corrupted the registry` ——
+   `NativeEmmc::stop()` terminate+release 了仍在注册表里的块设备。改成只丢指针（ShengUfs 同款）。
+
+### 传输并发：不能用会睡的锁
+
+Windows 让 APFS 同时挂多个卷并发读，而 `sirius_emmc.c` 的 staging buffer / ADMA
+描述符表是**全局唯一**的，原来锁是**每设备**的 → 描述符被并发踩，出现
+`EMMC adma2 ... no TC int=0000` 与 `executeRequest: request failed to start!`。
+
+试过 `IOLock` 全局锁：APFS 并发时阻塞等待，直接撞上
+`Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1400`（读路径可在不可睡上下文）。
+最终改为**原子标志 + IODelay 单飞**，不碰抢占计数。改完后这次启动：
+
+- 没有传输失败
+- 没有 registry corruption
+- 心跳持续（内核活着），读计数停在 0xf8
+
+### 现在的位置
+
+`load_init_program` 打印了 "attempting to load /usr/appleinternal/sbin/launchd.development"
+之后**既没有 success 返回、也没有 `failed loading ... errno` 分支、也没有下一条候选**，
+说明它阻塞在 `load_init_program_at_path` 内部，且**没有任何块读**——是锁/前置等待，不是 I/O。
+
+下一步：用 DEVELOPMENT 的 `launchdsuffix=release` 让它直接 exec `/sbin/launchd`，
+失败时内核会 panic 出 errno；成功则直接进 userland。
