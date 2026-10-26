@@ -213,6 +213,7 @@ static struct {
 	uint64_t    events, chars, polls;
 	uint32_t    last_event[2];
 	uint32_t    tx_delay_ms;
+	bool        host_open;
 	uint64_t    echoes;
 	uint32_t    cmd_fail;
 	uint32_t    tx_event;
@@ -946,7 +947,12 @@ ud_setup(void)
 			memcpy(data, ud_line_coding, sizeof(ud_line_coding));
 			n = sizeof(ud_line_coding);
 		} else if ((req == 0x22 || req == 0x23) && type == 0x21 && length == 0) {
-			/* SET_CONTROL_LINE_STATE or SEND_BREAK: accepted, no device action. */
+			/* SET_CONTROL_LINE_STATE carries DTR in wValue bit 0. The host raises it when the
+			 * tty is opened, which is the only reliable signal that a reader exists: cdc_acm
+			 * keeps no backlog for a closed port, so a burst sent earlier is simply lost. */
+			if (req == 0x22 && (value & 1u)) {
+				ud.host_open = true;
+			}
 		} else {
 			ok = false;
 		}
@@ -1020,6 +1026,7 @@ ud_event(uint32_t ev)
 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
 			ud.configured = false;
 			ud.tx_busy = false;
+			ud.host_open = false;
 			ud.state = EP0_SETUP;
 			ud_ep0_config();
 			ud_start_setup();
@@ -1038,6 +1045,7 @@ ud_event(uint32_t ev)
 			printf("SIRIUS USB: disconnect\n");
 			ud.configured = false;
 			ud.tx_busy = false;
+			ud.host_open = false;
 		}
 		return;
 	}
@@ -1520,13 +1528,19 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	 * seconds after RUN covers the whole enumeration window. */
 	/* Give the host a moment to create the tty and let the capture attach: cdc_acm keeps no
 	 * backlog for a port that is not open yet, so a burst sent at configure time is lost. */
-	ud.tx_delay_ms = 3000;   /* milliseconds, counted by the inline loop below */
-	for (unsigned ms = 0; ms < 120000; ms++) {
+	ud.tx_delay_ms = 3000;   /* fallback if the host never raises DTR; counted in the loop */
+	/* Measured behaviour: this loop must exit as soon as the ring has been handed to the host.
+	 * Long loops (120 s without the break) and a DTR-gated pump both delivered zero bytes, while
+	 * this exact shape delivered the 3813-byte boot log on every attempt. Keep the break. */
+	for (unsigned ms = 0; ms < 45000; ms++) {
 		sirius_usb_busy_wait(1000);
 		if (ud.tx_delay_ms > 0) {
 			ud.tx_delay_ms--;
 		}
 		ud_poll();
+		if (ud.chars >= pur_ring.total && ud.chars != 0) {
+			break;
+		}
 	}
 	if (!ud.hold) {
 		thread_t thread;
