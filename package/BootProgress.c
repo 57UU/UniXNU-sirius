@@ -392,6 +392,17 @@ static void draw(unsigned now) {
       line(29,b,0xff00ff88);
     }
     {
+      // eMMC (SDCC1 at 0x7c4000) probe from kits/sirius/sirius_emmc.c: step 1 means the register
+      // window mapped, 2 that the SDHCI registers were read, 3 that the card reports inserted and
+      // ready; halt lists the GCC branches still gated (bit0 apps, bit1 ahb, bit2 ice, bit3 bus).
+      extern volatile unsigned int sirius_emmc_step, sirius_emmc_version, sirius_emmc_caps,
+        sirius_emmc_state, sirius_emmc_clock, sirius_emmc_power, sirius_emmc_halts;
+      snprintf(b,sizeof(b),"EMMC step=%u ver=%04x caps=%08x st=%08x clk=%04x pwr=%02x h=%x",
+        sirius_emmc_step,sirius_emmc_version,sirius_emmc_caps,sirius_emmc_state,
+        sirius_emmc_clock,sirius_emmc_power,sirius_emmc_halts);
+      line(30,b,0xff00ddff);
+    }
+    {
       // sirius bring-up: why the native ArmCpu declines the /cpus nubs (AppleARMCPU panic).
       // Kernel CPU topology view of the eight MPIDR affinities, the ArmDTPlatform nub counters,
       // and the ArmCpu probe decision counters (the override in the device repository).

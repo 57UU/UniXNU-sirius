@@ -2,12 +2,16 @@ diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index bb558ee..82e3e51 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -506,6 +506,10 @@ bsd_init(void)
+@@ -506,6 +506,14 @@ bsd_init(void)
  	throttle_init();
  
  	printf(copyright);
 +	{
 +		extern void sirius_usb_console_start(void);
++		extern void sirius_emmc_probe(void);
++		/* Probe before the console starts: the console hands its ring to the host once, so
++		 * anything printed afterwards never reaches the capture. */
++		sirius_emmc_probe();
 +		sirius_usb_console_start();
 +	}
  

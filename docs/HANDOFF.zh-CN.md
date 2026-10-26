@@ -794,3 +794,71 @@ sudo python3 scripts/capture-usb-console.py --wait 60 --duration 190 --output /t
 现状：每次连接能拿到"连接时刻环形缓冲的内容"（3.8 KB，覆盖到 `lockdown_mode`）。
 要让整个启动过程持续流式输出，下一步应把 `ud_poll()` 挂到一个**确定在 bsd_init 期间运行**的
 周期路径上（面板刷新已经是了，但需要验证它在 bsd_init 阶段确实被调用），而不是靠内联忙等。
+
+## eMMC（SDCC1）第一阶段：控制器可用、卡已应答（2026-10-26）
+
+### 已经打通的
+
+板子是 **eMMC**，控制器是 SDCC1 `0x7c4000`（SDHCI 3.0，`ver=6c02`），
+CQHCI `0x7c5000`、ICE `0x7c8000`，中断 GIC SPI 641/644，SMMU SID `0x140`。
+
+探针 `package/sirius_emmc.c`（`scripts/build-sirius-emmc.py` 编译进
+`libShengPlatformPower.a`，由 `patches/xnu/sirius-usb-console.patch` 在 `bsd_init` 里调用）读到：
+
+```
+EMMC probe step=2 ver=6c02 caps=762dc8b2 state=01f800f0 clock=0407 power=0d halts=0
+```
+
+- `ver=6c02`：SDHCI 3.0（高通厂商位 0x6c）；
+- `caps=762dc8b2`：base clock 200 MHz，支持 3.3V/1.8V；
+- `state=01f800f0`：DAT 线电平正常（注意 **bit16 CARD_INSERTED 不接**，eMMC 是 non-removable，不能拿它判断有无卡）；
+- `clock=0407`、`power=0d`：卡时钟和总线电源都已由 bootloader 打开；
+- `halts=0`：`gcc_sdcc1_apps/ahb/ice`、`aggre_ufs_phy_axi` 四个分支都在运行。
+
+### 关键发现：卡时钟的 RCG 是无效配置
+
+```
+EMMC rcg cfg=00000401 m=00000000 n=00000000 d=000000ff
+```
+
+`sdcc1_apps_clk_src`（`cmd_rcgr 0x26028`）处于 **MND 模式但 M=0、N=0、D=0xff**——分频参数是垃圾值，
+所以卡实际收不到有效时钟，**所有命令都超时、响应读回 0xffffffff（总线浮高）**。
+
+按 Linux `ftbl_gcc_sdcc1_apps_clk_src` 的 400 kHz 条目（`BI_TCXO 19.2MHz / 12 × 1/4`）重写
+MND（M=1, N=4, D=12）并触发 update 位之后：
+
+```
+EMMC set400k=ok cfg=00000000 m=00000001 n=00000004 d=0000000c
+EMMC init ocr=40ff8080 ready=yes ...
+```
+
+**卡应答了**：OCR = `0x40ff8080`（bit30=1 → 高容量/按块寻址，电压窗口正常），`ready=yes`。
+
+### 目前卡住的一步
+
+`CMD2 (ALL_SEND_CID)` 与 `CMD3 (SEND_RCA)` 都没有响应：
+
+```
+EMMC cid=no rca FAIL int=8000 err=7fff st=01f800f1
+EMMC resp=00000000 00000000 80000000 0040ff80    ← 仍是 CMD1 的 R3 响应
+```
+
+`st` 的 bit0（CMD_INHIBIT）在失败后保持 1，说明命令挂在总线上没完成；RESPONSE 寄存器仍是
+上一条 CMD1 的内容，证明 **卡根本没回 CMD2/CMD3**，而不是解析错误。
+
+下一步要查的（按可能性）：
+
+1. **DAT0 busy**：eMMC 在 CMD1 之后可能仍用 DAT0 拉低表示忙，需要在发 CMD2 前等 DAT0 变高
+   （`PRESENT_STATE` bits[23:20]）；
+2. **CMD1 参数**：确认 OCR 里 sector-mode(bit30) 与电压位和这颗卡匹配；也可以再发一次 CMD1
+   直到 `ready` 稳定；
+3. **命令间延时/时钟**：识别阶段在每次命令间留出至少 74 个时钟，可在 `sdhci_command` 之后
+   加一段自旋延时；
+4. 若仍不行，考虑用 **CMD10(SEND_CID)** 或直接走 `CMD3 → CMD7 → CMD16 → CMD17`，
+   跳过 CID（CID 只是信息性的）。
+
+### 调试设施（可复用）
+
+- 驱动的所有报告都通过 `sirius_usb_log_char()` 直接写进 **USB 环形缓冲**，因此刷机后主机
+  `capture-usb-console.py` 就能读到——因为内核控制台在 `lockdown_mode` 之后就不再进环了。
+- 面板新增一行：`EMMC step= ver= caps= st= clk= pwr= h=`。

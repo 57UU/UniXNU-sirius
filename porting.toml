@@ -178,6 +178,9 @@ procedure = [
   "Follow the storage guide to choose an eMMC driver path, then select it and record the checkpoint.",
 ]
 findings = [
+  "SDCC1 at 0x7c4000 is reachable as an SDHCI 3.0 host (ver=6c02) and the boot chain leaves its clocks, power and bus width programmed; the register window, capabilities and present state all read plausibly.",
+  "The card clock was the first real blocker: gcc_sdcc1_apps_clk_src sat in MND mode with M=0 N=0 D=0xff, so no valid card clock reached the eMMC and every command timed out with a floating response. Programming the Linux 400 kHz entry (BI_TCXO/12*1/4) made the card answer CMD1 with OCR 0x40ff8080.",
+  "CMD2 and CMD3 still get no response while CMD1 works, so identification stops before the CID/RCA are known; the next checks are DAT0-busy before CMD2 and the inter-command clock delays.",
   "The legacy port deliberately kept every UFS and owner-root flag off; the boot-progress interlock of UniXNU had to be relaxed for that reason.",
   "The CDC console work lives in package/sirius_usb.c and does not change the storage blocker: the kernel still stops at the root device because no eMMC driver exists.",
 ]
