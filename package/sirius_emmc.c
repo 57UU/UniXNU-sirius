@@ -540,9 +540,18 @@ sdhci_read_block(uint32_t lba, uint8_t *out)
 	/* Clear the DMA select but keep the bus width and high-speed bit the chain set up. */
 	uint8_t hostctl = sdhci_read8(SDHCI_HOST_CONTROL);
 	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)(hostctl & 0x38u));
+	if (emmc_clear_command_line() != 0) {
+		return -1;
+	}
 	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
 	sdhci_write16(SDHCI_BLOCK_COUNT, 1u);
 	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ | SDHCI_TM_BLOCK_COUNT_ENABLE);
+	/* PIO needs no DMA, so the SMMU - whose storage stream is configured to abort - stays out of
+	 * the picture. Verify the mode write landed; SDHCI ignores it while the line is inhibited. */
+	if ((sdhci_read16(SDHCI_TRANSFER_MODE) & SDHCI_TM_READ) == 0) {
+		ring_puts("EMMC pio mode write ignored\r\n");
+		return -1;
+	}
 	/* The command index lives in bits 13:8 (SDHCI_MAKE_CMD in Linux); writing it into the flag
 	 * bits sends command 0 and the card never answers. */
 	if (sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
@@ -667,7 +676,7 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
-		int direct_ok = sdhci_read_block_sdma(1, direct);
+		int direct_ok = sdhci_read_block(1, direct);
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
 		}

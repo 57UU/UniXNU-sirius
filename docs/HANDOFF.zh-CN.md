@@ -1017,3 +1017,37 @@ EMMC cmd17 ok, no TC int=0000 err=0000 st=01f802f6
 2. 若没有映射 → 用 **PIO**（`TRANSFER_MODE` 不带 DMA 位）重试，并确认 `TRANSFER_MODE`
    写入在命令线干净时确实生效（本轮验证：干净时能写 `0x13`，卡住时写入被忽略）；
 3. 若 PIO 仍卡在 DAT Line Active → 问题在数据采样（DLL），按 `sdhci_msm_dll_init()` 初始化。
+
+### 数据阶段死因已确认：SMMU 对存储流是 abort（2026-10-26 21:45）
+
+只读探针读出：
+
+```
+EMMC smmu140=00000000     →  slot 0, bank 0, S2CR type = 0 = ABORT
+```
+
+ARM SMMU 的 `S2CR` 里 **type 0 = abort**。也就是说 bootloader 交给内核时，**存储流（SID 0x140）
+被配置成"拒绝所有访问"**。这与观察完全吻合：
+
+```
+EMMC cmd17 ok, no TC int=0000 err=0000 st=01f802f6   ← DAT Line Active 永远不结束
+```
+
+- CMD17 被卡接受；
+- 数据引擎把数据往内存写时被 SMMU 终止 → 传输永远不完成；
+- PIO 也不通（FIFO 不前进，读回同一个陈旧字 `20494645`），因为控制器在 DMA 模式下
+  并不把数据送进 CPU 可读的 FIFO。
+
+### 下一次的正确修法（顺序至关重要）
+
+上一轮盲写导致整机挂死，原因就是顺序错了：先写 SMR（立即生效、指向仍在 abort 的 S2CR），
+在写 S2CR 之前的窗口里，该流的所有在途访问都被 abort → SoC 挂死。
+
+正确顺序：
+
+1. **先写 S2CR**（该 slot）= `1`（bypass），使该流立刻不再被拒绝；
+2. `dsb sy`；
+3. **再写 SMR** = `(1 << 31) | 0x140`（VALID + 精确匹配）；
+4. 再次 `dsb sy`，并且**在写之前确保没有该流的传输在途**（命令线空闲、无 DAT active）。
+
+若再挂，就换用 context-bank 正规路径（CBAR/CBA2R/SCTLR + 页表），不要直接改 S2CR。
