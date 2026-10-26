@@ -549,7 +549,9 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 static int
 sdhci_read_block(uint32_t lba, uint8_t *out)
 {
-	/* Clear the DMA select but keep the bus width and high-speed bit the chain set up. */
+	/* Keep the bus width and high-speed bit the boot chain set, and only clear the DMA select.
+	 * Switching to 1-bit here hung the boot: the probe runs before the USB console starts, so a
+	 * stall in it costs the only log channel. */
 	uint8_t hostctl = sdhci_read8(SDHCI_HOST_CONTROL);
 	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)(hostctl & 0x38u));
 	if (emmc_clear_command_line() != 0) {
