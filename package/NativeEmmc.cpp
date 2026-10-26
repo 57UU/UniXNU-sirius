@@ -31,11 +31,34 @@ extern "C" void sirius_usb_log_char(char c);
  * sirius_emmc.c), so IOLog and printf never reach the host from here. The reports of this file
  * write the characters into the ring directly, which is the same path the eMMC probe uses. */
 static void
+emmc_log(const char *text) __attribute__((noinline));
+
+static void
 emmc_log(const char *text)
 {
 	while (*text != '\0') {
 		sirius_usb_log_char(*text++);
 	}
+}
+
+static void
+emmc_log_dec(const char *label, uint64_t value)
+{
+	char digits[24];
+	unsigned used = 0;
+	emmc_log(label);
+	if (value == 0) {
+		sirius_usb_log_char('0');
+	} else {
+		while (value != 0 && used < sizeof(digits)) {
+			digits[used++] = (char)('0' + (value % 10));
+			value /= 10;
+		}
+		while (used != 0) {
+			sirius_usb_log_char(digits[--used]);
+		}
+	}
+	sirius_usb_log_char('\n');
 }
 
 static void
@@ -88,16 +111,59 @@ nemmc_report_media(void)
 	matching->release();
 }
 
+/* What the storage stack produced: every IOMedia with its UUID, size and BSD name. The layers
+ * that create them log through IOLog, which does not reach the ring, so this is the only way to
+ * see whether APFS published the OS volume of the image set. */
+static void
+nemmc_report_media_table(const char *stage)
+{
+	emmc_log(stage);
+	OSDictionary *matching = IOService::serviceMatching("IOMedia");
+	if (matching == nullptr) {
+		return;
+	}
+	OSIterator *iterator = IOService::getMatchingServices(matching);
+	unsigned index = 0;
+	while (iterator != nullptr && index < 8) {
+		IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
+		if (media == nullptr) {
+			break;
+		}
+		OSString *uuid = OSDynamicCast(OSString, media->getProperty("UUID"));
+		OSString *bsd = OSDynamicCast(OSString, media->getProperty("BSD Name"));
+		OSNumber *size = OSDynamicCast(OSNumber, media->getProperty("Size"));
+		emmc_log("NEMMC media uuid=");
+		const char *text = uuid ? uuid->getCStringNoCopy() : "-";
+		for (unsigned i = 0; text[i] != '\0' && i < 40; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		emmc_log(" bsd=");
+		text = bsd ? bsd->getCStringNoCopy() : "-";
+		for (unsigned i = 0; text[i] != '\0' && i < 12; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		sirius_usb_log_char('\n');
+		emmc_log_dec("NEMMC media bytes ", size ? size->unsigned64BitValue() : 0);
+		index++;
+	}
+	if (iterator != nullptr) {
+		iterator->release();
+	}
+	matching->release();
+	emmc_log_dec("NEMMC media count ", index);
+}
+
 class NativeEmmcBlock : public IOBlockStorageDevice
 {
 	OSDeclareDefaultStructors(NativeEmmcBlock);
 
+	UInt64 fBase;
 	UInt64 fBlocks;
 	IOLock *fLock;
 	uint8_t *fBounce;
 
 public:
-	bool init(UInt64 blocks);
+	bool init(UInt64 base, UInt64 blocks);
 	bool start(IOService *provider) override;
 	void free() override;
 
@@ -160,13 +226,14 @@ public:
 OSDefineMetaClassAndStructors(NativeEmmcBlock, IOBlockStorageDevice);
 
 bool
-NativeEmmcBlock::init(UInt64 blocks)
+NativeEmmcBlock::init(UInt64 base, UInt64 blocks)
 {
 	emmc_log("NativeEmmc: step 7b block base init\n");
 	if (!IOBlockStorageDevice::init(nullptr)) {
 		return false;
 	}
 	emmc_log("NativeEmmc: step 7c block base init done\n");
+	fBase = base;
 	fBlocks = blocks;
 	fLock = IOLockAlloc();
 	fBounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
@@ -229,7 +296,7 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 	IOReturn result = kIOReturnSuccess;
 	IOLockLock(fLock);
 	for (UInt64 i = 0; i < count; i++) {
-		if (sirius_emmc_read_block(block + i, fBounce) != 0) {
+		if (sirius_emmc_read_block(fBase + block + i, fBounce) != 0) {
 			result = kIOReturnIOError;
 			break;
 		}
@@ -252,13 +319,173 @@ class NativeEmmc : public IOService
 	OSDeclareDefaultStructors(NativeEmmc);
 
 	NativeEmmcBlock *fBlock;
+	NativeEmmcBlock *fWindow[4];
+	char fWindowName[4][33];
+	unsigned fWindows;
+	int prepareWindows(UInt64 blocks);
 
 public:
 	bool start(IOService *provider) override;
 	void stop(IOService *provider) override;
+	unsigned windowCount() const { return fWindows; }
+	bool windowIs(unsigned index, const char *name) const;
+	void publishWindow(unsigned index);
 };
 
 OSDefineMetaClassAndStructors(NativeEmmc, IOService);
+
+/* The userdata partition starts with the SHNGROOT image-set manifest (scripts/unixnu/userdata.py):
+ * "SHNGROOT", u32 version, u32 count, u64 image_bytes, then 128-byte entries
+ * {char name[32]; u64 offset; u64 size; u32 block_size; u32 flags; u8 sha256[32]; u8 reserved[40]}
+ * where offset is relative to the partition. The windows hold the unchanged OS and SystemOS APFS
+ * images of the IPSW, so publishing each as its own read-only block device is what lets the
+ * original APFS mount the system volume; this driver never interprets the images. */
+#define USERDATA_FIRST_LBA 17301504ull   /* board.toml [userdata] first_lba */
+#define MANIFEST_BYTES     4096u
+
+int
+NativeEmmc::prepareWindows(UInt64 blocks)
+{
+	static uint8_t manifest[MANIFEST_BYTES];
+	fWindows = 0;
+	if (blocks <= USERDATA_FIRST_LBA) {
+		emmc_log("NEMMC manifest: no userdata window\n");
+		return 0;
+	}
+	for (unsigned block = 0; block < MANIFEST_BYTES / EMMC_BLOCK_SIZE; block++) {
+		if (sirius_emmc_read_block(USERDATA_FIRST_LBA + block,
+		    manifest + block * EMMC_BLOCK_SIZE) != 0) {
+			emmc_log("NEMMC manifest read failed\n");
+			return 0;
+		}
+	}
+	const char magic[8] = { 'S', 'H', 'N', 'G', 'R', 'O', 'O', 'T' };
+	for (unsigned i = 0; i < sizeof(magic); i++) {
+		if (manifest[i] != (uint8_t)magic[i]) {
+			emmc_log("NEMMC manifest: no SHNGROOT\n");
+			return 0;
+		}
+	}
+	uint32_t version = (uint32_t)manifest[8] | ((uint32_t)manifest[9] << 8) |
+	    ((uint32_t)manifest[10] << 16) | ((uint32_t)manifest[11] << 24);
+	uint32_t count = (uint32_t)manifest[12] | ((uint32_t)manifest[13] << 8) |
+	    ((uint32_t)manifest[14] << 16) | ((uint32_t)manifest[15] << 24);
+	emmc_log_dec("NEMMC manifest version ", version);
+	emmc_log_dec("NEMMC manifest windows ", count);
+	if (count > 4) {
+		count = 4;
+	}
+	for (uint32_t index = 0; index < count; index++) {
+		const uint8_t *entry = manifest + 0x18u + index * 128u;
+		uint64_t offset = 0, size = 0;
+		for (unsigned i = 0; i < 8; i++) {
+			offset |= (uint64_t)entry[0x20u + i] << (8 * i);
+			size |= (uint64_t)entry[0x28u + i] << (8 * i);
+		}
+		if (size == 0 || (offset % EMMC_BLOCK_SIZE) != 0 || (size % EMMC_BLOCK_SIZE) != 0 ||
+		    offset / EMMC_BLOCK_SIZE >= blocks) {
+			emmc_log("NEMMC manifest: malformed window\n");
+			continue;
+		}
+		UInt64 base = USERDATA_FIRST_LBA + offset / EMMC_BLOCK_SIZE;
+		UInt64 windowBlocks = size / EMMC_BLOCK_SIZE;
+		if (base + windowBlocks > blocks) {
+			emmc_log("NEMMC manifest: window outside the device\n");
+			continue;
+		}
+		emmc_log("NEMMC window name=");
+		for (unsigned i = 0; i < 32 && entry[i] != 0; i++) {
+			sirius_usb_log_char((char)entry[i]);
+		}
+		sirius_usb_log_char('\n');
+		emmc_log_dec("NEMMC window lba ", (uint64_t)base);
+		emmc_log_dec("NEMMC window blocks ", windowBlocks);
+
+		NativeEmmcBlock *window = new NativeEmmcBlock;
+		if (window == nullptr || !window->init(base, windowBlocks)) {
+			emmc_log("NEMMC window: allocation failed\n");
+			continue;
+		}
+		/* Prepared only: the service is started by the publisher thread, the way ShengUfs
+		 * publishes its root windows, so no service is created inside the caller's start. */
+		if (!window->attach(this)) {
+			emmc_log("NEMMC window: attach failed\n");
+			window->release();
+			continue;
+		}
+		for (unsigned i = 0; i < 32 && entry[i] != 0; i++) {
+			fWindowName[fWindows][i] = (char)entry[i];
+			if (i == 31) {
+				fWindowName[fWindows][32] = '\0';
+			}
+		}
+		fWindow[fWindows++] = window;
+	}
+	return (int)fWindows;
+}
+
+bool
+NativeEmmc::windowIs(unsigned index, const char *name) const
+{
+	unsigned i = 0;
+	for (; i < 32 && name[i] != '\0'; i++) {
+		if (fWindowName[index][i] != name[i]) {
+			return false;
+		}
+	}
+	return name[i] == '\0' && fWindowName[index][i] == '\0';
+}
+
+void
+NativeEmmc::publishWindow(unsigned index)
+{
+	if (index >= fWindows) {
+		return;
+	}
+	emmc_log("NEMMC publish window=");
+	for (unsigned i = 0; i < 32 && fWindowName[index][i] != '\0'; i++) {
+		sirius_usb_log_char(fWindowName[index][i]);
+	}
+	sirius_usb_log_char('\n');
+	if (!fWindow[index]->start(this)) {
+		emmc_log("NEMMC publish: start failed\n");
+	} else {
+		emmc_log_dec("NEMMC published index ", index);
+	}
+}
+
+/* The windows are published from here and not in start(): SystemOS first, the other windows
+ * next and OS last, which is the order ShengUfs uses so the system volume of the image set is
+ * available before the root volume is selected. */
+static void
+nemmc_window_publisher(void *owner, wait_result_t)
+{
+	NativeEmmc *driver = (NativeEmmc *)owner;
+	unsigned count = driver->windowCount();
+	unsigned order[4];
+	unsigned used = 0;
+	for (unsigned i = 0; i < count; i++) {
+		if (driver->windowIs(i, "SystemOS")) {
+			order[used++] = i;
+		}
+	}
+	for (unsigned i = 0; i < count; i++) {
+		if (!driver->windowIs(i, "SystemOS") && !driver->windowIs(i, "OS")) {
+			order[used++] = i;
+		}
+	}
+	for (unsigned i = 0; i < count; i++) {
+		if (driver->windowIs(i, "OS")) {
+			order[used++] = i;
+		}
+	}
+	for (unsigned i = 0; i < used; i++) {
+		driver->publishWindow(order[i]);
+	}
+	emmc_log_dec("NEMMC publisher done ", used);
+	nemmc_report_media_table("NEMMC media table after publish");
+	driver->release();
+}
 
 bool
 NativeEmmc::start(IOService *provider)
@@ -281,7 +508,7 @@ NativeEmmc::start(IOService *provider)
 	emmc_log("NativeEmmc: step 6 allocate the block device\n");
 	fBlock = new NativeEmmcBlock;
 	emmc_log_hex("NEMMC step 7 block ", (uint64_t)(uintptr_t)fBlock);
-	if (!fBlock || !fBlock->init(blocks)) {
+	if (!fBlock || !fBlock->init(0, blocks)) {
 		emmc_log("NativeEmmc: cannot allocate the block device\n");
 		return false;
 	}
@@ -293,9 +520,28 @@ NativeEmmc::start(IOService *provider)
 		return false;
 	}
 	emmc_log("NEMMC published blocks:\n"); emmc_log_hex("NEMMC blocks ", blocks);
+	/* Publishing the raw manifest windows is off by default: IOStorageFamily tears such a device
+	 * down with a double release (see the panic in docs/HANDOFF.zh-CN.md), and the reference
+	 * implementation only publishes windows it has verified first. sirius_emmc_win=1 enables the
+	 * experiment without rebuilding the kernel. */
+	unsigned windows = 0;
+	if (PE_parse_boot_argn("sirius_emmc_win", &windows, sizeof(windows)) && windows != 0) {
+		emmc_log_dec("NEMMC windows prepared ", (uint64_t)prepareWindows(blocks));
+	} else {
+		emmc_log("NEMMC windows: disabled (sirius_emmc_win=1 to publish)\n");
+	}
 	emmc_log("NativeEmmc: step 10 register the driver\n");
 	registerService();
 	emmc_log("NativeEmmc: step 11 done\n");
+	retain();
+	thread_t publisher;
+	if (kernel_thread_start(nemmc_window_publisher, this, &publisher) == KERN_SUCCESS) {
+		thread_deallocate(publisher);
+		emmc_log("NEMMC publisher started\n");
+	} else {
+		release();
+		emmc_log("NEMMC publisher thread failed\n");
+	}
 	return true;
 }
 
@@ -307,6 +553,12 @@ NativeEmmc::stop(IOService *provider)
 		fBlock->release();
 		fBlock = nullptr;
 	}
+	for (unsigned i = 0; i < fWindows; i++) {
+		fWindow[i]->terminate(kIOServiceSynchronous);
+		fWindow[i]->release();
+		fWindow[i] = nullptr;
+	}
+	fWindows = 0;
 	IOService::stop(provider);
 }
 
