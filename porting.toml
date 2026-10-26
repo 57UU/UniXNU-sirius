@@ -169,7 +169,7 @@ evidence = [
 
 [[area]]
 id = "storage"
-status = "host-verified"
+status = "device-verified"
 components = []
 paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "scripts/derive-storage-bindings.py"]
 inputs = [
@@ -198,13 +198,15 @@ completion = [
 ]
 limits = [
   "Read-only: the transfer path has no write command and reportWriteProtection() says so.",
-  "The driver is linked and started from bsd_init, but no boot has run with it yet: whether IOBlockStorageDriver matches NativeEmmcBlock and publishes IOMedia is unverified on the device.",
+  "IOStorageFamily parses the partition table through the driver, but the OS/SystemOS windows are not published as their own media yet, so the boot still ends at the root-device wait.",
+  "The heartbeat thread keeps ticking with the transfer count fixed at seven, so the kernel is alive and idle there rather than stuck.",
   "CMD7 still answers r1=00000000 while reads work, because the boot chain leaves the card selected.",
 ]
 next_action = [
-  "Flash the payload built from the current commit and record the boot-progress rows: the probe's GPT lines, the NativeEmmc log lines and whether an IOMedia or disk appears.",
+  "Publish the OS and SystemOS userdata windows as their own media with the window UUID of [userdata], so the root device the OS profile asks for exists.",
 ]
 evidence = [
+  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-obs.img; fastboot reboot; capture-usb-console.py --duration 240", revision = "d867b1d6498dc4d0f4ae4e18060762dcae6c5847", result = "NativeEmmc starts from bsd_init, publishes 0x747BFDF blocks of 512 bytes, and IOStorageFamily reads block 0, block 1 and block 2 with 21 sectors (the 84 GPT entries) through doAsyncReadWrite; the heartbeat keeps ticking with the transfer count fixed at seven, so the boot ends at the root-device wait. Log in docs/HANDOFF.zh-CN.md." },
   { kind = "host", reference = "docs/HANDOFF.zh-CN.md", command = "./scripts/xnu-container.sh run bash -lc './unixnu build kernel --skip-setup -D ../sirius'", revision = "a47f0d6b4615c3cdebf92102400a1bc302eb6d73", result = "The kernel links with NativeEmmc in the image (kernel.macho sha256 372820eb1b2cd9ecee15d769d1296771d0c8141c2681626d54651a62473446b8); the GitHub macOS runner builds the same archive (kernel workflow run 40386710258)." },
   { kind = "source", reference = "package/sirius_emmc.c", result = "SDCC1 bring-up, the ADMA2 read path and the GPT parse." },
 ]

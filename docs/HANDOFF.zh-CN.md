@@ -1556,3 +1556,76 @@ kernelcache。这与上游 `build-software-aes-bindings.py` 用 `scripts/data/` 
 - `kernel.macho` 里有 66 个 `NativeEmmc`/`NativeEmmcBlock` 符号。
 
 `payload.json` 里 `hardware_tested` 仍是 `false`：镜像没上过真机。
+
+## eMMC 第八阶段：驱动在 IOKit 里跑起来，内核读到了分区表（2026-10-27）
+
+前一阶段只知道驱动能链上。这一阶段把它推到了**真机运行并被上层读取**。
+
+### 阻塞真相：IOLog 到不了 USB 环
+
+驱动第一次跑真机时串口**一个字都没有**，看起来像"静默挂起"。实际原因是：
+
+- 内核 console 在 `bsd_init` 之前就**不再喂 USB 环**了（`package/sirius_emmc.c` 顶部早就写了
+  这个结论，探针因此用 `ring_puts()` 直写环）；
+- 驱动用的是 `IOLog`（走 console），所以输出全被丢掉，代码其实一直在跑。
+
+把驱动改成同样直写环（`emmc_log` / `emmc_log_hex` → `sirius_usb_log_char`）之后，整条路径立刻可见。
+
+### 首次完整运行（日志原文）
+
+```
+NativeEmmc: step 0 enter
+NEMMC step 1 instance fffffff6cfc012a0
+NativeEmmc: step 2 init done
+NEMMC step 3 platform fffffff6cfcde800
+NativeEmmc: step 4 base start
+NativeEmmc: step 5 prepare
+NativeEmmc: step 6 allocate the block device
+NEMMC step 7 block fffffff5e967e000
+NativeEmmc: step 7b block base init
+NativeEmmc: step 7c block base init done
+NativeEmmc: step 8 attach the block device
+NativeEmmc: step 9 start the block device
+NativeEmmc: step 9a block base start
+NativeEmmc: step 9b block register
+NativeEmmc: step 9c block registered
+NEMMC published blocks:
+NEMMC blocks 000000000747bfdf
+NativeEmmc: step 10 register the driver
+NativeEmmc: step 11 done
+```
+
+`0x747BFDF` = 122142687 = GPT `last_lba`(122142686) + 1。**存储 ABI 绑定的每一环都由此在真机上验证**：
+推导出的 dispatch table、metaclass、`IOBlockStorageDevice` 保护构造器、基类 `init`、
+`OSMetaClass` 分配、`registerService()`。
+
+### 上层确实在读它
+
+加了读计数后的一次启动：
+
+```
+NEMMC published blocks:
+NEMMC blocks 000000000747bfdf
+NEMMC IOMedia count 0000000000000000     ← 发布瞬间还没有 IOMedia（匹配是异步的）
+NEMMC read block 0000000000000000 / count 1   ← 块 0
+NEMMC read block 0000000000000001 / count 1   ← GPT 头
+NEMMC read block 0000000000000002 / count 21  ← GPT 表：84 × 128B / 512 = 21 扇区
+NEMMC read block 0000000000000000 / count 1
+NEMMC read block 0000000000000000 / count 3
+NEMMC read block 0000000000000000 / count 1
+NEMMC read block 0000000000000001 / count 1
+NEMMC alive beats/reads 0000001700000007      ← 心跳继续，读计数恒为 7
+```
+
+读序就是 IOStorageFamily 的分区方案探测：全盘 IOMedia 建好之后，各 scheme 依次读盘头。
+`count=21` 与我们记录在案的 GPT 几何完全吻合，是设备侧对那份几何的独立确认。
+
+心跳线程持续递增而读计数不再增长 → **内核活着，停在等根设备**，不是卡死。
+
+### 仍未完成
+
+`[userdata]` 里记录的 OS / SystemOS 两个窗口还没有作为独立 media 发布出去，
+所以内核等的是那个带 UUID 的根卷，而现在没有。这是下一阶段的工作。
+
+观测手段留在驱动里：`NEMMC read block/count`（前 8 次 + 每 256 次）、
+`NEMMC IOMedia count`（发布后立即查一次）、`NEMMC alive beats/reads`（2 秒一次心跳）。
