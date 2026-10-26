@@ -648,6 +648,9 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 		ring_puts(" d1=");
 		ring_hex(*(volatile uint32_t *)(desc + 4), 8);
 		ring_puts("\r\n");
+		/* Clear the latched status so one failed transfer cannot poison the next one. */
+		sdhci_write8(SDHCI_ADMA_ERROR_STATUS, 0u);
+		sdhci_write32(SDHCI_INT_STATUS, 0xffffffffu);
 		ring_puts("EMMC adma2 adst=");
 		ring_hex(sdhci_read8(SDHCI_ADMA_ERROR_STATUS), 2);
 		ring_puts(" no TC int=");

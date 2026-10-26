@@ -7,3 +7,4 @@
 # https://unixnu.com/xnu/source-and-patches#add-a-patch to export and order it.
 sirius-usb-console.patch
 sirius-skip-rootauth.patch
+sirius-console-ring.patch

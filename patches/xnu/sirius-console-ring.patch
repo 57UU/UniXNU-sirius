@@ -1,0 +1,19 @@
+diff --git a/osfmk/console/serial_general.c b/osfmk/console/serial_general.c
+index b1ca47a..7a7fef0 100644
+--- a/osfmk/console/serial_general.c
++++ b/osfmk/console/serial_general.c
+@@ -159,6 +159,14 @@ void
+ console_printbuf_putc(int ch, void * arg)
+ {
+ 	struct console_printbuf_state * info = (struct console_printbuf_state *)arg;
++	/* Mirror the formatted kernel log into the USB console ring. The console path stops feeding
++	 * that ring once bsd_init runs, which hid every kernel message after it, panics included.
++	 * The ring is a static buffer, so this is safe from the first printf of the kernel to the
++	 * last one before a panic. */
++	{
++		extern void sirius_usb_log_char(char);
++		sirius_usb_log_char((char)ch);
++	}
+ 	info->total += 1;
+ 	if (info->pos < (SERIAL_CONS_BUF_SIZE - 1)) {
+ 		info->str[info->pos] = (char)ch;

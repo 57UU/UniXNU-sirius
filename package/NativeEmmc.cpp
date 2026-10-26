@@ -76,6 +76,31 @@ emmc_log_hex(const char *label, uint64_t value)
  * ring, so the only way to see how far the storage stack got is to report what it asks for.
  * nemmc_reads counts the transfers the stack issues, and nemmc_heartbeats is written by a thread
  * so a stalled kernel is distinguishable from one that simply has nothing to print. */
+/* The transport keeps one bounce buffer and one descriptor table for every device (see
+ * sirius_emmc.c), so transfers must be serialised across all block devices, not per device:
+ * APFS mounts several volumes at once and would otherwise interleave into the same table. */
+
+/* The transport keeps one staging buffer and one descriptor table for every device (see
+ * sirius_emmc.c), so a transfer must be single-flight across all block devices: APFS mounts
+ * several volumes and interleaves reads. This is a plain atomic flag with a delay, not an
+ * IOLock: the read path can run where sleeping is not allowed, and an IOLock there unbalances
+ * the preemption count ("Taking non-sleepable RW lock with preemption enabled", lock_rw.c:1400). */
+static volatile uint32_t nemmc_transport_busy;
+
+static void
+nemmc_transport_lock_acquire(void)
+{
+	while (__atomic_exchange_n(&nemmc_transport_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+		IODelay(20);
+	}
+}
+
+static void
+nemmc_transport_lock_release(void)
+{
+	__atomic_store_n(&nemmc_transport_busy, 0, __ATOMIC_RELEASE);
+}
+
 volatile uint32_t nemmc_reads;
 volatile uint32_t nemmc_heartbeats;
 
@@ -263,10 +288,7 @@ NativeEmmcBlock::free()
 		IOFree(fBounce, EMMC_BLOCK_SIZE);
 		fBounce = nullptr;
 	}
-	if (fLock) {
-		IOLockFree(fLock);
-		fLock = nullptr;
-	}
+	fLock = nullptr;
 	IOBlockStorageDevice::free();
 }
 
@@ -276,15 +298,22 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 {
 	(void)attributes;
 	if (!buffer || !completion || !completion->action || count == 0) {
+		emmc_log("NEMMC refuse: no buffer or completion\n");
 		return kIOReturnBadArgument;
 	}
 	if (block >= fBlocks || count > fBlocks - block) {
+		emmc_log_hex("NEMMC refuse range block ", block);
+		emmc_log_dec("NEMMC refuse range count ", count);
+		emmc_log_dec("NEMMC refuse range blocks ", fBlocks);
 		return kIOReturnBadArgument;
 	}
 	if (buffer->getDirection() != kIODirectionIn) {
+		emmc_log_dec("NEMMC refuse direction ", (uint64_t)buffer->getDirection());
 		return kIOReturnNotWritable;
 	}
 	if (buffer->getLength() < count * EMMC_BLOCK_SIZE) {
+		emmc_log_dec("NEMMC refuse length ", (uint64_t)buffer->getLength());
+		emmc_log_dec("NEMMC refuse length need ", count * EMMC_BLOCK_SIZE);
 		return kIOReturnBadArgument;
 	}
 
@@ -294,9 +323,11 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		emmc_log_hex("NEMMC read count ", count);
 	}
 	IOReturn result = kIOReturnSuccess;
-	IOLockLock(fLock);
+	nemmc_transport_lock_acquire();
 	for (UInt64 i = 0; i < count; i++) {
 		if (sirius_emmc_read_block(fBase + block + i, fBounce) != 0) {
+			emmc_log_hex("NEMMC transfer failed lba ", fBase + block + i);
+			emmc_log_dec("NEMMC transfer failed index ", i);
 			result = kIOReturnIOError;
 			break;
 		}
@@ -306,7 +337,7 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 			break;
 		}
 	}
-	IOLockUnlock(fLock);
+	nemmc_transport_lock_release();
 
 	/* The transfer is synchronous, so the completion fires before returning. */
 	completion->action(completion->target, completion->parameter, result,
@@ -569,6 +600,7 @@ extern "C" void
 sirius_native_emmc_probe(void)
 {
 	static NativeEmmc *device = nullptr;
+
 	unsigned enabled = 1;
 	if (PE_parse_boot_argn("sirius_emmc_drv", &enabled, sizeof(enabled)) && enabled == 0) {
 		emmc_log("NativeEmmc: disabled by boot arg\n");
