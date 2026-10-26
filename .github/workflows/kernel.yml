@@ -22,6 +22,10 @@ on:
           - kernel
           - kernel payload
         default: "kernel"
+      pre_build:
+        description: Optional shell commands run in the UniXNU checkout before the kernel build
+        required: false
+        default: ""
   push:
     branches: [main]
     paths:
@@ -91,11 +95,54 @@ jobs:
           print(f'board: {board["board"]["name"]}')
           PY
 
+      - name: Run pre-build steps
+        if: inputs.pre_build != ''
+        working-directory: unixnu
+        env:
+          PRE_BUILD: ${{ inputs.pre_build }}
+          DEVICE_DIR: ${{ github.workspace }}/device
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash -euo pipefail -c "$PRE_BUILD"
+
       - name: Build kernel
         working-directory: unixnu
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: ./unixnu build kernel
+
+      # The storage ABI binding needs inputs that only exist on macOS (xcrun, dwarfdump) and
+      # evidence captured from a live stop. Run the qualification scripts so a run reports
+      # exactly which input is missing instead of leaving it to a later guess.
+      - name: Storage ABI diagnostics
+        if: always()
+        continue-on-error: true
+        working-directory: unixnu
+        run: |
+          set -x
+          mkdir -p "$RUNNER_TEMP/storage-abi"
+          ls -la build/ || true
+          ls -la build/storage-abi/ build/xnu-prelink/ || true
+          git -C refer/IOStorageFamily rev-parse HEAD || true
+          python3 scripts/prepare-storage-headers.py > "$RUNNER_TEMP/storage-abi/headers.log" 2>&1 || true
+          python3 scripts/audit-storage-interface.py > "$RUNNER_TEMP/storage-abi/storage.log" 2>&1 || true
+          python3 scripts/audit-aes-interface.py > "$RUNNER_TEMP/storage-abi/aes.log" 2>&1 || true
+          for log in "$RUNNER_TEMP"/storage-abi/*.log; do
+            echo "===== $log ====="
+            tail -n 40 "$log" || true
+          done
+
+      # The block driver is compiled by its own builder; this probe reports the exact link
+      # error of the archive form so the binding work has a reference on macOS as well.
+      - name: NativeEmmc link probe
+        if: always()
+        continue-on-error: true
+        working-directory: unixnu
+        run: |
+          set -x
+          python3 "$UNIXNU_DEVICE/scripts/build-native-emmc.py" 2>&1 | tee "$RUNNER_TEMP/storage-abi/native-emmc-build.log" || true
+          sed -i.bak 's|^  # "build-native-emmc.py"|  "build-native-emmc.py"|' "$UNIXNU_DEVICE/board.toml"
+          grep -n 'native-emmc' "$UNIXNU_DEVICE/board.toml" || true
+          ./unixnu build kernel 2>&1 | tee "$RUNNER_TEMP/storage-abi/native-emmc-link.log" | tail -n 60 || true
 
       - name: Build payload
         working-directory: unixnu
@@ -103,6 +150,7 @@ jobs:
         run: ./unixnu build payload
 
       - name: Collect artifacts
+        if: always()
         run: |
           mkdir -p artifacts
           # Format 2 output layout: out/<device>/<os_profile>/<config>/
@@ -111,6 +159,9 @@ jobs:
           cp "$work"/kernel/kernel.macho.json artifacts/ 2>/dev/null || true
           cp "$work"/payload/payload.img artifacts/ 2>/dev/null || true
           cp "$work"/payload/payload.json artifacts/ 2>/dev/null || true
+          cp "$work"/logs/kernel.log artifacts/kernel.log 2>/dev/null || true
+          cp "$work"/logs/*.log artifacts/ 2>/dev/null || true
+          cp "$RUNNER_TEMP"/storage-abi/*.log artifacts/ 2>/dev/null || true
           ls -lh artifacts/
 
       - name: Upload artifacts
