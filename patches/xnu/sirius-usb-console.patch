@@ -2,7 +2,7 @@ diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index bb558ee..82e3e51 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -506,6 +506,18 @@ bsd_init(void)
+@@ -506,6 +506,19 @@ bsd_init(void)
  	throttle_init();
  
  	printf(copyright);
@@ -13,10 +13,11 @@ index bb558ee..82e3e51 100644
 +		/* Probe before the console starts: the console hands its ring to the host once, so
 +		 * anything printed afterwards never reaches the capture. */
 +		sirius_emmc_probe();
-+		/* Start the block driver on the controller the probe left ready, so IOStorageFamily can
-+		 * match it and publish a disk. */
-+		sirius_native_emmc_probe();
 +		sirius_usb_console_start();
++		/* Start the block driver on the controller the probe left ready, after the console: the
++		 * console ring keeps replaying, so a panic inside the driver still leaves its lines and
++		 * everything before them reachable from the host. */
++		sirius_native_emmc_probe();
 +	}
  
  #if CONFIG_DEV_KMEM
