@@ -446,6 +446,7 @@ procedure = [
   "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
+  "A register write-and-read-back test is the next diagnostic for the eMMC data phase, because SDHCI_TRANSFER_MODE reads back 0x33 after writing 0x13, which separates a write the vendor layer ignores from a command that is never sent.",
   "The eMMC probe reports every step (controller registers, the clock tree, the response registers around CMD0/CMD1 and each failure) into the USB console ring, which is how the card clock and CMD2 findings above were obtained without a photograph.",
   "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
