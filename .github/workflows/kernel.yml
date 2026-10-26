@@ -119,10 +119,18 @@ jobs:
           python3 scripts/derive-storage-bindings.py --check
           python3 - <<'PY'
           import json
+          record = json.load(open('scripts/data/storage-bindings.json'))
           plan = json.load(open('../kernel/kernel.json'))
-          storage = [e for e in plan['extents'] if e['module'] == 'com.apple.iokit.IOStorageFamily']
-          print(f'prelinked kernel {plan["candidate_sha256"][:16]}, slide {plan["slide"]:#x}, '
-                f'{len(storage)} IOStorageFamily segments')
+          assert plan['slide'] == record['slide'], 'record and prelink slides differ'
+          storage = {e['segment']: e for e in plan['extents']
+                     if e['module'] == 'com.apple.iokit.IOStorageFamily'}
+          const, text = storage['__DATA_CONST'], storage['__TEXT_EXEC']
+          table = int(record['dispatch_table'], 16) + record['slide']
+          constructor = int(record['protected_constructor'], 16) + record['slide']
+          assert const['va'] <= table < const['va'] + const['size'], 'dispatch table outside the prelinked segment'
+          assert text['va'] <= constructor < text['va'] + text['size'], 'constructor outside the prelinked segment'
+          print(f'PASS: {plan["candidate_sha256"][:16]} holds the dispatch table at {table:#x} '
+                f'and the constructor at {constructor:#x}')
           PY
 
       - name: Build payload
