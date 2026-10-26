@@ -14,6 +14,7 @@
 #include <IOKit/IOPlatformExpert.h>
 #include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
+#include <kern/thread.h>
 
 extern "C" {
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
@@ -46,6 +47,45 @@ emmc_log_hex(const char *label, uint64_t value)
 		sirius_usb_log_char(digits[(value >> shift) & 0xf]);
 	}
 	sirius_usb_log_char('\n');
+}
+
+/* Observability: the drivers above this one log through IOLog, which does not reach the USB
+ * ring, so the only way to see how far the storage stack got is to report what it asks for.
+ * nemmc_reads counts the transfers the stack issues, and nemmc_heartbeats is written by a thread
+ * so a stalled kernel is distinguishable from one that simply has nothing to print. */
+volatile uint32_t nemmc_reads;
+volatile uint32_t nemmc_heartbeats;
+
+static void
+nemmc_heartbeat_thread(void *, wait_result_t)
+{
+	for (;;) {
+		emmc_log_hex("NEMMC alive beats/reads ",
+		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
+		nemmc_heartbeats++;
+		IOSleep(2000);
+	}
+	thread_terminate(current_thread());
+}
+
+static void
+nemmc_report_media(void)
+{
+	OSDictionary *matching = IOService::serviceMatching("IOMedia");
+	if (matching == nullptr) {
+		emmc_log("NEMMC media: no matching dictionary\n");
+		return;
+	}
+	OSIterator *iterator = IOService::getMatchingServices(matching);
+	uint64_t count = 0;
+	if (iterator != nullptr) {
+		while (iterator->getNextObject() != nullptr) {
+			count++;
+		}
+		iterator->release();
+	}
+	emmc_log_hex("NEMMC IOMedia count ", count);
+	matching->release();
 }
 
 class NativeEmmcBlock : public IOBlockStorageDevice
@@ -181,6 +221,11 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		return kIOReturnBadArgument;
 	}
 
+	uint32_t call = nemmc_reads++;
+	if (call < 8 || (call & 0xffu) == 0) {
+		emmc_log_hex("NEMMC read block ", block);
+		emmc_log_hex("NEMMC read count ", count);
+	}
 	IOReturn result = kIOReturnSuccess;
 	IOLockLock(fLock);
 	for (UInt64 i = 0; i < count; i++) {
@@ -303,4 +348,12 @@ sirius_native_emmc_probe(void)
 		return;
 	}
 	device = candidate;
+	nemmc_report_media();
+	thread_t thread;
+	if (kernel_thread_start(nemmc_heartbeat_thread, nullptr, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+		emmc_log("NEMMC heartbeat started\n");
+	} else {
+		emmc_log("NEMMC heartbeat failed\n");
+	}
 }
