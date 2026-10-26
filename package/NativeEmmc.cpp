@@ -24,6 +24,30 @@ extern unsigned long long sirius_emmc_total_blocks;
 
 #define EMMC_BLOCK_SIZE 512
 
+extern "C" void sirius_usb_log_char(char c);
+
+/* The kernel console stops feeding the USB ring before bsd_init prints anything (see
+ * sirius_emmc.c), so IOLog and printf never reach the host from here. The reports of this file
+ * write the characters into the ring directly, which is the same path the eMMC probe uses. */
+static void
+emmc_log(const char *text)
+{
+	while (*text != '\0') {
+		sirius_usb_log_char(*text++);
+	}
+}
+
+static void
+emmc_log_hex(const char *label, uint64_t value)
+{
+	static const char digits[] = "0123456789abcdef";
+	emmc_log(label);
+	for (int shift = 60; shift >= 0; shift -= 4) {
+		sirius_usb_log_char(digits[(value >> shift) & 0xf]);
+	}
+	sirius_usb_log_char('\n');
+}
+
 class NativeEmmcBlock : public IOBlockStorageDevice
 {
 	OSDeclareDefaultStructors(NativeEmmcBlock);
@@ -98,11 +122,11 @@ OSDefineMetaClassAndStructors(NativeEmmcBlock, IOBlockStorageDevice);
 bool
 NativeEmmcBlock::init(UInt64 blocks)
 {
-	IOLog("NativeEmmc: step 7b block base init\n");
+	emmc_log("NativeEmmc: step 7b block base init\n");
 	if (!IOBlockStorageDevice::init(nullptr)) {
 		return false;
 	}
-	IOLog("NativeEmmc: step 7c block base init done\n");
+	emmc_log("NativeEmmc: step 7c block base init done\n");
 	fBlocks = blocks;
 	fLock = IOLockAlloc();
 	fBounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
@@ -115,13 +139,13 @@ NativeEmmcBlock::init(UInt64 blocks)
 bool
 NativeEmmcBlock::start(IOService *provider)
 {
-	IOLog("NativeEmmc: step 9a block base start\n");
+	emmc_log("NativeEmmc: step 9a block base start\n");
 	if (!fLock || !fBounce || !IOBlockStorageDevice::start(provider)) {
 		return false;
 	}
-	IOLog("NativeEmmc: step 9b block register\n");
+	emmc_log("NativeEmmc: step 9b block register\n");
 	registerService();
-	IOLog("NativeEmmc: step 9c block registered\n");
+	emmc_log("NativeEmmc: step 9c block registered\n");
 	return true;
 }
 
@@ -195,38 +219,38 @@ bool
 NativeEmmc::start(IOService *provider)
 {
 	fBlock = nullptr;
-	IOLog("NativeEmmc: step 4 base start\n");
+	emmc_log("NativeEmmc: step 4 base start\n");
 	if (!IOService::start(provider)) {
 		return false;
 	}
-	IOLog("NativeEmmc: step 5 prepare\n");
+	emmc_log("NativeEmmc: step 5 prepare\n");
 	if (sirius_emmc_prepare() != 0) {
-		IOLog("NativeEmmc: the eMMC did not come up\n");
+		emmc_log("NativeEmmc: the eMMC did not come up\n");
 		return false;
 	}
 	UInt64 blocks = sirius_emmc_total_blocks;
 	if (blocks == 0) {
-		IOLog("NativeEmmc: no usable GPT on the device\n");
+		emmc_log("NativeEmmc: no usable GPT on the device\n");
 		return false;
 	}
-	IOLog("NativeEmmc: step 6 allocate the block device\n");
+	emmc_log("NativeEmmc: step 6 allocate the block device\n");
 	fBlock = new NativeEmmcBlock;
-	IOLog("NativeEmmc: step 7 block %p\n", fBlock);
+	emmc_log_hex("NEMMC step 7 block ", (uint64_t)(uintptr_t)fBlock);
 	if (!fBlock || !fBlock->init(blocks)) {
-		IOLog("NativeEmmc: cannot allocate the block device\n");
+		emmc_log("NativeEmmc: cannot allocate the block device\n");
 		return false;
 	}
-	IOLog("NativeEmmc: step 8 attach the block device\n");
+	emmc_log("NativeEmmc: step 8 attach the block device\n");
 	fBlock->attach(this);
-	IOLog("NativeEmmc: step 9 start the block device\n");
+	emmc_log("NativeEmmc: step 9 start the block device\n");
 	if (!fBlock->start(this)) {
-		IOLog("NativeEmmc: the block device did not start\n");
+		emmc_log("NativeEmmc: the block device did not start\n");
 		return false;
 	}
-	IOLog("NativeEmmc: published %llu blocks of %u bytes\n", blocks, EMMC_BLOCK_SIZE);
-	IOLog("NativeEmmc: step 10 register the driver\n");
+	emmc_log("NEMMC published blocks:\n"); emmc_log_hex("NEMMC blocks ", blocks);
+	emmc_log("NativeEmmc: step 10 register the driver\n");
 	registerService();
-	IOLog("NativeEmmc: step 11 done\n");
+	emmc_log("NativeEmmc: step 11 done\n");
 	return true;
 }
 
@@ -251,29 +275,29 @@ sirius_native_emmc_probe(void)
 	static NativeEmmc *device = nullptr;
 	unsigned enabled = 1;
 	if (PE_parse_boot_argn("sirius_emmc_drv", &enabled, sizeof(enabled)) && enabled == 0) {
-		IOLog("NativeEmmc: disabled by boot arg\n");
+		emmc_log("NativeEmmc: disabled by boot arg\n");
 		return;
 	}
 	if (device != nullptr) {
 		return;
 	}
-	IOLog("NativeEmmc: step 0 enter\n");
+	emmc_log("NativeEmmc: step 0 enter\n");
 	NativeEmmc *candidate = new NativeEmmc;
-	IOLog("NativeEmmc: step 1 instance %p\n", candidate);
+	emmc_log_hex("NEMMC step 1 instance ", (uint64_t)(uintptr_t)candidate);
 	if (candidate == nullptr || !candidate->init()) {
-		IOLog("NativeEmmc: allocation failed\n");
+		emmc_log("NativeEmmc: allocation failed\n");
 		return;
 	}
-	IOLog("NativeEmmc: step 2 init done\n");
+	emmc_log("NativeEmmc: step 2 init done\n");
 	IOService *platform = IOService::getPlatform();
-	IOLog("NativeEmmc: step 3 platform %p\n", platform);
+	emmc_log_hex("NEMMC step 3 platform ", (uint64_t)(uintptr_t)platform);
 	if (platform != nullptr && !candidate->attach(platform)) {
-		IOLog("NativeEmmc: attach to the platform failed\n");
+		emmc_log("NativeEmmc: attach to the platform failed\n");
 		candidate->release();
 		return;
 	}
 	if (!candidate->start(platform)) {
-		IOLog("NativeEmmc: the driver did not start\n");
+		emmc_log("NativeEmmc: the driver did not start\n");
 		candidate->detach(platform);
 		candidate->release();
 		return;
