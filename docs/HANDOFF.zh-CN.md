@@ -1629,3 +1629,46 @@ NEMMC alive beats/reads 0000001700000007      ← 心跳继续，读计数恒为
 
 观测手段留在驱动里：`NEMMC read block/count`（前 8 次 + 每 256 次）、
 `NEMMC IOMedia count`（发布后立即查一次）、`NEMMC alive beats/reads`（2 秒一次心跳）。
+
+## eMMC 第九阶段：根卷是 SHNGROOT 清单，不是 APFS（2026-10-27）
+
+上一阶段只知道"内核在读盘、停在等根设备"。这一阶段把**等的那个根**弄清楚了。
+
+### 设备侧证据（一次启动，串口原文）
+
+```
+EMMC userdata guid=647aa5c6de8392d0f60f191cd0036be0
+EMMC window head=53484e47524f4f54 0100000002000000 magic=....
+```
+
+- `userdata` 分区在 GPT 里的唯一 GUID（原始字节序）→ 按 GUID 惯例写作
+  `C6A57A64-83DE-D092-F60F-191CD0036BE0`。这是将来 `/chosen/root-matching` 要引用的值。
+- 窗口首扇区 = ASCII `SHNGROOT` + `version=1` + `count=2`，即 UniXNU 的
+  **image-set 清单**（见 UniXNU 文档 `concepts/userdata.md`），不是 APFS。
+  也就是说"挂载根"不是让 APFS 去解析它，而是要有能读懂 SHNGROOT 的消费者。
+
+### 根挂载的依赖链（读上游源码得到的结论）
+
+UniXNU 的消费者是 `patches/xnu/offline-owner-*.patch` 这一组：
+
+| 补丁 | 开关 |
+| --- | --- |
+| `offline-owner-boot-manifest` | `XNU_OWNER_BOOT_MANIFEST` |
+| `offline-owner-cache-carrier` / `-systemos-mount` | `XNU_OWNER_CACHE_MOUNT` / `XNU_OWNER_CACHE_STARTUP` |
+| `offline-owner-root-binding-audit` | `XNU_OWNER_ROOT_AUDIT` / `XNU_OWNER_ROOT_TRUST` |
+| `offline-owner-root-crypto-probe` / `-z-air-init` | 同族 |
+
+而 `offline-owner-systemos-mount` 里对 `XNU_NATIVE_RAM_BLOCK` 有依赖，`XNU_NATIVE_RAM_BLOCK`
+又要求 `XNU_NATIVE_AES`，后者需要 `build/image4-ignition/aes-interface-audit.json`
+——又是那份我们拿不到的实机证据（和存储 ABI 审计同源的问题，只是这次没有 kernelcache
+里的等价推导可用，因为 AES 审计要 KDK 参考文件 + 实机快照）。
+
+所以根挂载目前不是"再写几十行"的事，而是三选一：
+
+1. **复现 AES 审计**（照存储那套思路从 kernelcache 推导），再接 owner-root 补丁组；
+2. **自己实现一个 SHNGROOT 消费者**（XNU vfsops/kernfs，指向我们已发布的块设备），
+   绕开 owner-root 补丁组，但要自己做 vfs ABI 绑定；
+3. **向上游要 Linux 可复现的审计路径**，和存储那次一样。
+
+已确认可用的地基：块设备（`device-verified`）、userdata 的 GPT GUID、
+窗口几何（`[userdata]` 里记录的 17301504..122142686 已被设备侧读回验证）。
