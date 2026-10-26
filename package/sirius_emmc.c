@@ -218,12 +218,12 @@ static int
 sdhci_wait(uint32_t mask, unsigned timeout_us)
 {
 	for (unsigned waited = 0; waited < timeout_us; waited += 10) {
+		/* Only the requested completion bits are waited for. The error summary bit in INT_STATUS
+		 * latches spuriously on this controller (the error status register reads all ones), and
+		 * bailing out on it aborted commands that were still on their way to completing. */
 		uint16_t status = sdhci_read16(SDHCI_INT_STATUS);
 		if ((status & mask) != 0) {
 			return (int)(status & mask);
-		}
-		if ((status & SDHCI_INT_ERROR) != 0) {
-			return -1;
 		}
 		spin_us(10);
 	}
@@ -233,11 +233,23 @@ sdhci_wait(uint32_t mask, unsigned timeout_us)
 static int
 sdhci_command_capture(uint16_t command, uint32_t argument, uint32_t *response)
 {
-	for (unsigned waited = 0; waited < 100000; waited += 10) {
-		if ((sdhci_read32(SDHCI_PRESENT_STATE) & (SDHCI_PS_CMD_INHIBIT | SDHCI_PS_DAT_INHIBIT)) == 0) {
+	unsigned waited = 0;
+	while ((sdhci_read32(SDHCI_PRESENT_STATE) & (SDHCI_PS_CMD_INHIBIT | SDHCI_PS_DAT_INHIBIT)) != 0) {
+		if (waited > 50000) {
+			/* Something left the command line wedged (a previous command that never
+			 * completed). Reset the command and data circuits, as the kernel does on timeout,
+			 * and carry on - otherwise every later command is refused as well. */
+			sdhci_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+			for (unsigned spin = 0; spin < 10000; spin++) {
+				if ((sdhci_read8(SDHCI_SOFTWARE_RESET) & (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) == 0) {
+					break;
+				}
+				spin_us(10);
+			}
 			break;
 		}
 		spin_us(10);
+		waited += 10;
 	}
 	sdhci_write16(SDHCI_INT_STATUS, 0xffffu);
 	sdhci_write16(SDHCI_ERR_INT_STATUS, 0xffffu);
@@ -531,7 +543,16 @@ sirius_emmc_probe(void)
 		/* Full eMMC identification, the same order the kernel uses: CMD0 to idle, CMD1 until the
 		 * card leaves its power-up busy state, CMD2 for the CID, CMD3 for the RCA, CMD7 to select
 		 * it and CMD16 to fix the block length at 512. */
+		ring_puts("EMMC resp-before=");
+		for (unsigned i = 0; i < 4; i++) {
+			ring_hex(sdhci_read32(SDHCI_RESPONSE + 4u * i), 8);
+			ring_puts(" ");
+		}
+		ring_puts("\r\n");
 		sdhci_command((uint16_t)(0u << 8), 0u);
+		ring_puts("EMMC resp-after-cmd0=");
+		ring_hex(sdhci_read32(SDHCI_RESPONSE), 8);
+		ring_puts("\r\n");
 		uint32_t ocr = 0;
 		int ready = -1;
 		for (unsigned tries = 0; tries < 200; tries++) {
@@ -545,6 +566,12 @@ sirius_emmc_probe(void)
 			}
 			spin_us(1000);
 		}
+		ring_puts("EMMC resp-after-cmd1=");
+		for (unsigned i = 0; i < 4; i++) {
+			ring_hex(sdhci_read32(SDHCI_RESPONSE + 4u * i), 8);
+			ring_puts(" ");
+		}
+		ring_puts("\r\n");
 		ring_puts("EMMC init ocr=");
 		ring_hex(ocr, 8);
 		ring_puts(" ready=");
@@ -553,8 +580,11 @@ sirius_emmc_probe(void)
 		uint32_t cid[4] = { 0, 0, 0, 0 };
 		int cid_ok = -1;
 		for (unsigned tries = 0; tries < 3 && cid_ok != 0; tries++) {
+			/* A 136-bit response has no index field, and Linux only sets the index check for
+			 * commands that carry MMC_RSP_OPCODE, so asking for it here makes the controller
+			 * reject the response. CRC stays on. */
 			cid_ok = sdhci_command_capture((uint16_t)((2u << 8) | SDHCI_CMD_RESP_136 |
-			    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), 0u, cid);
+			    SDHCI_CMD_CRC_CHECK), 0u, cid);
 			if (cid_ok != 0) {
 				spin_us(1000);
 			}

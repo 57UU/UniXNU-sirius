@@ -862,3 +862,43 @@ EMMC resp=00000000 00000000 80000000 0040ff80    ← 仍是 CMD1 的 R3 响应
 - 驱动的所有报告都通过 `sirius_usb_log_char()` 直接写进 **USB 环形缓冲**，因此刷机后主机
   `capture-usb-console.py` 就能读到——因为内核控制台在 `lockdown_mode` 之后就不再进环了。
 - 面板新增一行：`EMMC step= ver= caps= st= clk= pwr= h=`。
+
+### eMMC 第二阶段：卡应答 CMD1，卡在 CMD2（2026-10-26 20:10）
+
+**已确认的事实**（全部来自 USB 控制台直接抓取，不是拍照）：
+
+```
+EMMC rcg cfg=00000401 m=00000000 n=00000000 d=000000ff      ← 修复前：MND 计数无效
+EMMC set400k=ok cfg=00000000 m=00000001 n=00000004 d=0000000c ← 写 400 kHz 后
+EMMC resp-before=00000000 00000000 00000000 00000000        ← 无陈旧响应
+EMMC resp-after-cmd1=40ff8080 00000000 00000000 00000000    ← CMD1 是**真实**响应
+EMMC init ocr=40ff8080 ready=yes
+EMMC cid=no  rca FAIL int=8000 err=7fff st=01f800f1
+```
+
+- **CMD0/CMD1 真的被执行了**（响应寄存器从全 0 变成 0x40ff8080）；
+- OCR = `0x40ff8080`：bit30=1 → 高容量/按块寻址；电压窗口正常；`ready=yes`；
+- **CMD2（ALL_SEND_CID，136 位响应）和 CMD3（SEND_RCA，48 位）都没有响应**，失败后
+  `PRESENT_STATE` 的 CMD_INHIBIT 一直是 1，命令线卡住。
+
+已试过并排除：
+
+| 尝试 | 结果 |
+| --- | --- |
+| CMD2 去掉 index check（136 位响应没有 index 字段，Linux 只在 `MMC_RSP_OPCODE` 时置位） | 仍失败 |
+| CMD2 去掉 CRC 检查 | 仍失败 |
+| 不等错误汇总位、只等 CC | 仍失败（说明不是提前中止） |
+| 命令线卡住时自动 `RESET_CMD/RESET_DATA` 后重试 | 仍失败 |
+| 跳过 CMD2 直接 CMD3 | 仍失败 |
+
+**结论性判断**：48 位的 CMD1 能正常收发，136 位的 CMD2 完全无响应，且随后命令线卡死。
+这已经超出 SDHCI 标准寄存器层，指向 Qualcomm vendor 块（`CORE_VENDOR_SPEC` 读回 0，说明
+`0x10c` 这个偏移在 v5 核上不对）里的**响应采样/DLL 配置**——长响应需要 DLL 正确锁定。
+
+下一步（下一次上机）：
+
+1. 从 Linux `sdhci-msm.c` 里找 v5 核的 vendor 寄存器偏移（`CORE_VERSION` 的 major/minor 决定
+   偏移表），读回 DLL 配置寄存器，确认 DLL 是否锁定；
+2. 或试 **CMD10 (SEND_CID, addressed)** / 直接 `CMD7(RCA=1) → CMD13 → CMD17`，
+   绕过 136 位响应（CID 只是信息性的，读块只需要 RCA + SELECT + blocklen）；
+3. 若 DLL 没锁，需要在 vendor 块里按 `sdhci_msm_dll_init()` 的序列初始化 DLL 后再试。
