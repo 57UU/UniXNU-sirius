@@ -1420,6 +1420,29 @@ windows = [
 >
 > 先要确认 sheng 设备是怎么解决这一点的（它的 `ShengUfs` 同样引用这些符号）。
 
+**查证结果（2026-10-27 03:10）：sheng 也没有解决这个问题。**
+
+- `UniXNU-sheng/board.toml` 用的是 `"component:ShengUfs"`，其 `sheng_defconfig` 里
+  `CONFIG_XNU_NATIVE_UFS=y`；
+- 构建脚本对该开关的处理与我们的归档完全相同：
+  ```sh
+  KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$UFS_ARCHIVE"
+  ```
+- sheng 仓库里**没有** IOBlockStorageDevice 的桩实现或相关补丁；
+- 更关键的是 UniXNU 文档对它自己的描述：「Controller selection, GCC diagnostics and
+  configurable SMMU addressing are implemented. **The firmware-to-XNU handoff still requires
+  device execution.**」——即 UFS 驱动尚未跑通，自然也没暴露过这个链接问题。
+
+因此结论是：**这是 UniXNU 构建层缺失的一环**，不是设备侧能绕过的。方向有两条：
+
+1. 在 UniXNU 的内核链接里为存储归档允许未定义符号（`LDFLAGS_KERNEL` 加
+   `-Wl,-undefined,dynamic_lookup`，由 prelink 阶段绑定 IOStorageFamily 的符号）。
+   注意：直接把它塞进 `LD_KERNEL_ARCHIVES` **无效**（本轮已实测，标志没有出现在链接命令里），
+   必须进 `LDFLAGS_KERNEL`；
+2. 或者把这类驱动做成独立 kext 参加 prelink，而不是 force-load 进内核。
+
+按 AGENTS.md 的分工，这属于 UniXNU 的通用改动，应进它的 patch series / 上游，而不是本仓库。
+
 ### C 侧的公共接口（驱动可直接调用）
 
 ```c
