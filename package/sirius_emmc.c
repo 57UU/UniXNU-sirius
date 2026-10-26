@@ -879,6 +879,9 @@ volatile uint32_t sirius_emmc_power;
 volatile uint32_t sirius_emmc_halts;
 volatile uint32_t sirius_emmc_signature;
 
+/* Forward declaration: the GPT walk below reports the first sector of the userdata window. */
+int sirius_emmc_read_block(unsigned long long lba, void *buffer);
+
 void
 sirius_emmc_probe(void)
 {
@@ -1099,22 +1102,58 @@ sirius_emmc_probe(void)
 				    ((uint32_t)entry[0x22] << 16) | ((uint32_t)entry[0x23] << 24);
 				uint32_t last = (uint32_t)entry[0x28] | ((uint32_t)entry[0x29] << 8) |
 				    ((uint32_t)entry[0x2a] << 16) | ((uint32_t)entry[0x2b] << 24);
-				ring_puts("EMMC part first=");
-				ring_dec(first);
-				ring_puts(" last=");
-				ring_dec(last);
-				ring_puts(" name=");
+				char name[37];
+				unsigned name_len = 0;
 				for (unsigned i = 0; i < 36; i++) {
 					uint16_t ch = (uint16_t)entry[0x38u + 2u * i] |
 					    ((uint16_t)entry[0x39u + 2u * i] << 8);
 					if (ch == 0) {
 						break;
 					}
-					sirius_usb_log_char(ch < 0x80 ? (char)ch : '?');
+					name[name_len++] = ch < 0x80 ? (char)ch : '?';
+				}
+				name[name_len] = '\0';
+				ring_puts("EMMC part first=");
+				ring_dec(first);
+				ring_puts(" last=");
+				ring_dec(last);
+				ring_puts(" name=");
+				for (unsigned i = 0; i < name_len; i++) {
+					sirius_usb_log_char(name[i]);
 				}
 				ring_puts("\r\n");
+				/* The root device is matched on the volume UUID, so the unique GUID of the
+				 * userdata entry is what /chosen/root-matching has to name. */
+				if (name_len == 8 && name[0] == 'u' && name[1] == 's' && name[2] == 'e' &&
+				    name[3] == 'r' && name[4] == 'd' && name[5] == 'a' &&
+				    name[6] == 't' && name[7] == 'a') {
+					ring_puts("EMMC userdata guid=");
+					for (unsigned i = 0; i < 16; i++) {
+						ring_hex(entry[0x10u + i], 2);
+					}
+					ring_puts("\r\n");
+				}
 				shown++;
 			}
+			}
+		}
+		/* What the root actually is: the first sector of the userdata window. APFS keeps its
+		 * container magic at offset 32 of block zero. */
+		{
+			static uint8_t head[512];
+			if (sirius_emmc_read_block(17301504ull, head) != 0) {
+				ring_puts("EMMC window read=fail\r\n");
+			} else {
+				ring_puts("EMMC window head=");
+				for (unsigned i = 0; i < 16; i++) {
+					ring_hex(head[i], 2);
+				}
+				ring_puts(" magic=");
+				for (unsigned i = 32; i < 36; i++) {
+					char c = (char)head[i];
+					sirius_usb_log_char(c >= 0x20 && c < 0x7f ? c : '.');
+				}
+				ring_puts("\r\n");
 			}
 		}
 		return;
