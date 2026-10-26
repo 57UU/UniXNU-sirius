@@ -1059,6 +1059,11 @@ ud_event(uint32_t ev)
 			n = UD_RX_SIZE;
 		}
 		ud_sync(UD_RX, UD_RX_SIZE);
+		/* Any byte from the host means "send me the log again": the ring is otherwise only handed
+		 * over once, at enumeration, so a capture that starts a moment too late sees nothing. */
+		if (n != 0) {
+			ud.tx_pos = 0;
+		}
 		if (n != 0 && !ud.tx_busy) {
 			for (uint32_t i = 0; i < n; i++) {
 				*(volatile char *)(ud.dma + UD_ECHO + i) =

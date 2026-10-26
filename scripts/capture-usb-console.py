@@ -63,6 +63,14 @@ def main():
         return 1
 
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+    # The driver replays its whole ring buffer as soon as the host sends any byte,
+    # because otherwise the log is only handed over once, at enumeration.
+    try:
+        poke = open(port, 'wb', buffering=0)
+        poke.write(b'\n')
+        poke.close()
+    except OSError:
+        pass
     total = 0
     end = time.time() + args.duration if args.duration else None
     with open(args.output, 'ab') as log:
