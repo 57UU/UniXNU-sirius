@@ -110,39 +110,20 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: ./unixnu build kernel
 
-      # The storage ABI binding needs inputs that only exist on macOS (xcrun, dwarfdump) and
-      # evidence captured from a live stop. Run the qualification scripts so a run reports
-      # exactly which input is missing instead of leaving it to a later guess.
-      - name: Storage ABI diagnostics
-        if: always()
-        continue-on-error: true
-        working-directory: unixnu
+      # The archive step runs before the prelink, so it binds the storage imports from
+      # scripts/data/storage-bindings.json. By now the prelink has fetched the pinned kernelcache,
+      # so the record is proved against it here: a different image or slide fails the run.
+      - name: Verify the recorded storage bindings
+        working-directory: unixnu/out/sirius/ipados-17.7.11-21H461/sirius/tree
         run: |
-          set -x
-          mkdir -p "$RUNNER_TEMP/storage-abi"
-          ls -la build/ || true
-          ls -la build/storage-abi/ build/xnu-prelink/ || true
-          git -C refer/IOStorageFamily rev-parse HEAD || true
-          python3 scripts/prepare-storage-headers.py > "$RUNNER_TEMP/storage-abi/headers.log" 2>&1 || true
-          python3 scripts/audit-storage-interface.py > "$RUNNER_TEMP/storage-abi/storage.log" 2>&1 || true
-          python3 scripts/audit-aes-interface.py > "$RUNNER_TEMP/storage-abi/aes.log" 2>&1 || true
-          for log in "$RUNNER_TEMP"/storage-abi/*.log; do
-            echo "===== $log ====="
-            tail -n 40 "$log" || true
-          done
-
-      # The block driver is compiled by its own builder; this probe reports the exact link
-      # error of the archive form so the binding work has a reference on macOS as well.
-      - name: NativeEmmc link probe
-        if: always()
-        continue-on-error: true
-        working-directory: unixnu
-        run: |
-          set -x
-          python3 "$UNIXNU_DEVICE/scripts/build-native-emmc.py" 2>&1 | tee "$RUNNER_TEMP/storage-abi/native-emmc-build.log" || true
-          sed -i.bak 's|^  # "build-native-emmc.py"|  "build-native-emmc.py"|' "$UNIXNU_DEVICE/board.toml"
-          grep -n 'native-emmc' "$UNIXNU_DEVICE/board.toml" || true
-          ./unixnu build kernel 2>&1 | tee "$RUNNER_TEMP/storage-abi/native-emmc-link.log" | tail -n 60 || true
+          python3 scripts/derive-storage-bindings.py --check
+          python3 - <<'PY'
+          import json
+          plan = json.load(open('../kernel/kernel.json'))
+          storage = [e for e in plan['extents'] if e['module'] == 'com.apple.iokit.IOStorageFamily']
+          print(f'prelinked kernel {plan["candidate_sha256"][:16]}, slide {plan["slide"]:#x}, '
+                f'{len(storage)} IOStorageFamily segments')
+          PY
 
       - name: Build payload
         working-directory: unixnu

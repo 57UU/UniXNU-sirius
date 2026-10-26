@@ -1484,13 +1484,56 @@ sheng 的 `[kernel] archives` 里就有这两行，所以它能链上；我们�
   与脚本固定的值一致（同一份 21H461 kernelcache）；
 - 卡在 `gdb-stop.json` 与 `aes-interface-audit.json`。
 
-### 结论与三条出路
+### 结论：不需要实机证据也能推导（2026-10-27 已实现并链接）
 
-1. **在 Mac 上生成审计证据**（上游的做法）：需要 Xcode + 在 GDB 下跑一次原始内核取样。
-   之后 json 是通用的，可以提交到设备仓库复用。
-2. **向上游要一条 Linux 路径**：审计里对 `gdb-stop.json` 的依赖可以用"静态字节比对"替代
-   （metaclass 的 `superClassLink/classSize` 已经在 vtable 分析里得到了），但这属于 UniXNU 改动。
-3. **绕开 IOStorageFamily**：不发布 IOMedia，改用其他方式给内核提供根（不推荐，等于重写一层）。
+上面「三条出路」是我当时的判断，被当天的实测推翻了。关键事实是：**prelink 对每个
+component 施加的是常量 slide**，不是任意重排。
 
-**注意**：本轮为验证方便临时改过 UniXNU 的 `scripts/audit-storage-interface.py`（跳过
-dwarfdump、SDK 路径、`-Werror`），已用 `git checkout` 还原。
+证据来自 prelink 计划本身（`out/<device>/<profile>/<config>/kernel/kernel.json`）：
+
+- `extents[].va = 原地址 + slide`，IOStorageFamily 的 4 个段逐段验证均成立
+  （`0xfffffff005283580 → 0xfffffff004283580` 等，slide = `-0x1000000`）；
+- `bindings[]` 里 `new_site = site + slide`、`component` 目标的 `new_target = target + slide`。
+
+所以驱动需要的地址 = 原始 kernelcache 里的地址 + slide。**不需要实机 GDB 快照。**
+
+`scripts/derive-storage-bindings.py` 就是这条推导，每一步都带自证：
+
+| 判据 | 期望 | 实测 |
+| --- | --- | --- |
+| 槽位名被内核导出 | 176 / 190 | 176 / 190 ✓ |
+| kext 自有槽（被换成 BRK 陷阱） | 14 | 14 ✓ |
+| 唯一 dispatch table | 1 个 | `0xfffffff006cb44c0` ✓（`__DATA_CONST` 内唯一） |
+| 槽 0/1 指向 `d4200020`（BRK） | 是 | 是 ✓ |
+| 保护构造器 = 唯一 `str x8,[x0]` 存 `table+16` 的函数 | 1 个 | `0xfffffff00596ed98` ✓ |
+| 其分支经 thunk 解析为 | `IOService::IOService(OSMetaClass const*)` | 是 ✓ |
+| 基类析构器 = 删除析构器前的分支 | 解析为 `IOService::~IOService()` | 是 ✓ |
+| 预链接内核在滑动地址处字节一致 | 是 | 构造器 96 字节完全一致 ✓ |
+
+槽位顺序表固定在 `scripts/data/storage-vtable-names.json`（钉住 IOStorageFamily 源码
+revision `e45fbe30`，由记录中的 XNU 编译命令在容器里编出参考对象后导出），所以推导本身
+不需要编译器，Linux 和 macOS 行为一致。
+
+推导结果记在 `scripts/data/storage-bindings.json`（18 个地址 + kernelcache sha256 + slide）。
+**构建用的是这份记录，不是现场推导**：archive 阶段在 prelink 之前跑，冷树（CI）那时还没有
+kernelcache。这与上游 `build-software-aes-bindings.py` 用 `scripts/data/` 记录的做法一致。
+复核有两条路：暖树上 archive 阶段会顺手 `--check`；CI 在 prelink 之后必定跑一次
+`derive-storage-bindings.py --check`，用刚下载的真实 kernelcache 比对，钉住的镜像或 slide
+一变，构建就会红。
+
+结果：`NativeEmmc` 的 11 个 `IOBlockStorageDevice` 引用全部绑定为绝对符号，
+`libShengPlatformPower.a` 里多了 `original-bindings.o`，内核链接通过。
+
+| 构建 | kernel.macho sha256 |
+| --- | --- |
+| 仅链接驱动（Linux 容器） | `89d7a9279160caa3d568693bd5864db5e559c1a258289b0e906f32dbc7d917d4` |
+| 加上 `sirius_native_emmc_probe()` 入口 | `eb4e8d473bbe1eb3accff01c3284620bb771ee0df1151b02c0423ae11c826265` |
+
+为什么上游审计还要实机快照：它额外认证**运行期**数值（metaclass 的
+`superClassLink`/`classSize` 由 kext 的静态构造器在启动时写入，文件里是 0），
+用来证明内核实际跑的布局与编译期 ABI 一致。我们只需要**地址**，不需要这些内容，
+所以那条证据链对本板不是必需的；如果将来要向上游提交审计结果，可以再补。
+
+尚未完成（下一阶段）：驱动已链接、入口已接进 `bsd_init`，但还没有在真机上启动验证，
+也没有确认 IOStorageFamily 的 `IOBlockStorageDriver` 是否匹配到我们发布的
+`NativeEmmcBlock` 并生成 IOMedia。
