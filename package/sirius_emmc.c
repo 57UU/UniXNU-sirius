@@ -411,8 +411,68 @@ extern vm_offset_t kvtophys(vm_offset_t va);
 
 #define SDHCI_TM_DMA (1u << 0)
 
+/* SDHCI ignores writes to the transfer mode register while the command line is inhibited, so a
+ * single wedged command silently poisons every transfer that follows. Clear the line first. */
+static int
+emmc_clear_command_line(void)
+{
+	if ((sdhci_read32(SDHCI_PRESENT_STATE) & (SDHCI_PS_CMD_INHIBIT | SDHCI_PS_DAT_INHIBIT)) == 0) {
+		return 0;
+	}
+	sdhci_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+	for (unsigned waited = 0; waited < 20000; waited += 10) {
+		if ((sdhci_read8(SDHCI_SOFTWARE_RESET) & (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) == 0) {
+			return 0;
+		}
+		spin_us(10);
+	}
+	return -1;
+}
+
 /* A page-aligned static buffer is physically contiguous, which is all SDMA needs. */
 static uint8_t sdma_buffer[512] __attribute__((aligned(4096)));
+
+/* The eMMC controller's DMA goes through the apps SMMU with stream id 0x140; without a matching
+ * stream mapping the data engine faults and the transfer never completes (DAT line stays active
+ * forever, no transfer-complete event). Install an exact-match bypass entry the way the boot chain
+ * does for the storage stream. */
+#define SMMU_PA 0x15000000u
+#define SMMU_SIZE 0x000d0000u
+#define EMMC_STREAM_ID 0x0140u
+
+/* Read-only: which stream mapping does the boot chain leave for the storage stream id? Writing
+ * SMR/S2CR while the SMMU is live is not safe from here, and a wrong write hangs the SoC. */
+static uint32_t emmc_smmu_report;
+
+static int
+emmc_smmu_probe(void)
+{
+	vm_offset_t smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
+	if (smmu == 0) {
+		return -1;
+	}
+	uint32_t idr0 = *(volatile uint32_t *)(smmu + 0x020u);
+	unsigned count = idr0 & 0xffu;
+	if (count == 0 || count > 128) {
+		return -1;
+	}
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t smr = *(volatile uint32_t *)(smmu + 0x800u + 4u * i);
+		if ((smr & (1u << 31)) == 0) {
+			continue;
+		}
+		uint32_t id = smr & 0xffffu;
+		if (id != EMMC_STREAM_ID) {
+			continue;
+		}
+		uint32_t s2cr = *(volatile uint32_t *)(smmu + 0xc00u + 4u * i);
+		emmc_smmu_report = ((uint32_t)(i & 0xffu) << 16) | ((s2cr & 0xffu) << 8) |
+		    ((s2cr >> 16) & 3u);
+		return 0;
+	}
+	emmc_smmu_report = 0xffffffffu;   /* no mapping for 0x140 at all */
+	return -1;
+}
 
 /* Single-block read over SDMA: the boot chain left the controller in a DMA mode where the buffer
  * port only returns one stale word, so the block is fetched by the data engine into memory
@@ -427,15 +487,43 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 	for (unsigned i = 0; i < 512; i++) {
 		sdma_buffer[i] = 0;
 	}
+	if (emmc_clear_command_line() != 0) {
+		return -1;
+	}
+	emmc_smmu_probe();
 	sdhci_write32(SDHCI_DMA_ADDRESS, (uint32_t)pa);
 	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
 	sdhci_write16(SDHCI_BLOCK_COUNT, 1u);
 	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ | SDHCI_TM_BLOCK_COUNT_ENABLE | SDHCI_TM_DMA);
-	if (sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
-	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba) != 0) {
+	/* If the mode write did not land the transfer would run with the boot chain's settings, so
+	 * treat that as a failure instead of misreading whatever comes back. */
+	uint16_t mode = sdhci_read16(SDHCI_TRANSFER_MODE);
+	if ((mode & (SDHCI_TM_READ | SDHCI_TM_DMA)) != (SDHCI_TM_READ | SDHCI_TM_DMA)) {
 		return -1;
 	}
-	if (sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000) <= 0) {
+	int cmd_ok = sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
+	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba);
+	if (cmd_ok != 0) {
+		ring_puts("EMMC cmd17 fail int=");
+		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
+		ring_puts(" err=");
+		ring_hex(sdhci_read16(SDHCI_ERR_INT_STATUS), 4);
+		ring_puts(" st=");
+		ring_hex(sdhci_read32(SDHCI_PRESENT_STATE), 8);
+		ring_puts("\r\n");
+		return -1;
+	}
+	int tc = sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000);
+	if (tc <= 0) {
+		ring_puts("EMMC smmu140=");
+		ring_hex(emmc_smmu_report, 8);
+		ring_puts(" cmd17 ok, no TC int=");
+		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
+		ring_puts(" err=");
+		ring_hex(sdhci_read16(SDHCI_ERR_INT_STATUS), 4);
+		ring_puts(" st=");
+		ring_hex(sdhci_read32(SDHCI_PRESENT_STATE), 8);
+		ring_puts("\r\n");
 		return -1;
 	}
 	sdhci_write16(SDHCI_INT_STATUS, 0xffffu);
@@ -579,15 +667,6 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
-		/* The boot chain selected the card before handing over, and the first card on the bus
-		 * conventionally gets RCA 1. Re-select it explicitly, then read. */
-		uint32_t sel[1] = { 0 };
-		int sel_ok = sdhci_command((uint16_t)((7u << 8) | SDHCI_CMD_RESP_48_BUSY |
-		    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), 1u << 16);
-		ring_puts("EMMC cmd7(rca1)=");
-		ring_puts(sel_ok == 0 ? "ok" : "fail");
-		ring_puts("\r\n");
-		(void)sel;
 		int direct_ok = sdhci_read_block_sdma(1, direct);
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
@@ -601,6 +680,25 @@ sirius_emmc_probe(void)
 	ring_puts(" dma=");
 	ring_hex(sdhci_read32(SDHCI_DMA_ADDRESS), 8);
 	ring_puts("\r\n");
+		/* Does a write actually land? SDHCI_TRANSFER_MODE reads back 0x33 after writing 0x13,
+		 * which means either the write is ignored or the vendor layer pins the mode. Write a
+		 * recognisable value and read it back before trusting anything else. */
+		{
+			uint16_t before = sdhci_read16(SDHCI_TRANSFER_MODE);
+			sdhci_write16(SDHCI_TRANSFER_MODE, 0x1234u);
+			uint16_t after = sdhci_read16(SDHCI_TRANSFER_MODE);
+			sdhci_write16(SDHCI_TRANSFER_MODE, before);
+			ring_puts("EMMC xfer-write before=");
+			ring_hex(before, 4);
+			ring_puts(" wrote=1234 read=");
+			ring_hex(after, 4);
+			ring_puts("\r\n");
+		}
+		ring_puts("EMMC vspec3=");
+		ring_hex(sdhci_read32(MSM_CORE_VENDOR_SPEC3), 8);
+		ring_puts(" pwrctl-ctl=");
+		ring_hex(sdhci_read32(0x24cu), 8);
+		ring_puts("\r\n");
 	ring_puts("EMMC direct-read=");
 		ring_puts(direct_ok == 0 ? "ok" : "fail");
 		ring_puts(" sig=");
