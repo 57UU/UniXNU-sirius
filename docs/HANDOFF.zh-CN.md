@@ -947,3 +947,38 @@ EMMC cid=no  rca FAIL int=8000 err=7fff st=01f800f1
 
 **建议的下一步顺序**：先做 SID 0x140 的 SMMU 旁路 + SDMA 读（最可能直接拿到 GPT），
 再做 DLL 与 CMD2（为了完整识别），最后才谈块设备/I-O 层。
+
+### eMMC 第四阶段：命令在 CMD1 之后失效（2026-10-26 21:15）
+
+本轮又排除了两条：
+
+| 尝试 | 结果 |
+| --- | --- |
+| `CMD7 (SELECT_CARD, RCA=1)` 之后 CMD17（假设 bootloader 用 RCA=1 选中过） | `cmd7(rca1)=fail`，随后读块仍失败 |
+| SDMA 读（页对齐缓冲 + `SDHCI_DMA_ADDRESS`） | 数据全 0；`xfer` 读回 `0x33`（bit5 = auto-CMD12 仍被置位），说明转移模式寄存器还带着启动链的位 |
+| 直接 CMD17（不做任何初始化，靠 bootloader 留下的是选中状态） | 失败 |
+
+**现在的核心谜团**：`CMD0 + CMD1` 能得到真实的 OCR（`resp-after-cmd1=40ff8080`、`ready=yes`），
+但**之后的每一条命令（CMD2/CMD3/CMD7/CMD13/CMD17）都没有响应**，并且命令线在第一次失败后
+就保持在 CMD_INHIBIT。
+
+一个值得注意的细节：`xfer` 读回 `0x33` 而不是我们写进去的 `0x13`——bit5（Auto CMD12 使能）
+是我们没写却被置位的。**这说明 `SDHCI_TRANSFER_MODE` 的写入没有完全生效**，或者控制器在
+vendor 层被固定成某种模式。下一步应当验证写入是否真的落到寄存器（写一个特征值再读回），
+这能一次判定"寄存器写入被忽略"还是"命令没发出去"。
+
+另外：`SDHCI_TRANSFER_MODE` 是 **16 位寄存器**，偏移 `0x0c`；`SDHCI_COMMAND` 是 16 位、偏移
+`0x0e`。若用 32 位访问会同时改写两个寄存器，务必保持 16 位读写（当前代码是 16 位）。
+
+**建议下一次的顺序**：
+
+1. 写 `TRANSFER_MODE = 0x1234` 再读回，确认寄存器写入是否生效（判定 vendor 只读/锁定）；
+2. 若写入无效，检查 `CORE_VENDOR_SPEC3`（v5 `0x250`）与 `CORE_VENDOR_SPEC` 是否把控制器
+   锁进某种自动模式；
+3. 若写入有效，用 `CMD13 (RCA=1)` 的响应判断卡状态，再决定是 CMD7 还是重新 CMD3 取 RCA。
+
+### 给下一次的一句话总结
+
+SDCC1 的寄存器层、时钟（400 kHz MND）、电源与 CMD0/CMD1 都已经用硬证据确认可用；
+剩下的全部问题集中在 **CMD1 之后的命令不再被执行** 和 **数据阶段从未真正传输过**
+（之前看到的 `EFI ` 是 bootloader 留在 FIFO 里的陈旧字，不能用它判断成功）。

@@ -579,6 +579,15 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
+		/* The boot chain selected the card before handing over, and the first card on the bus
+		 * conventionally gets RCA 1. Re-select it explicitly, then read. */
+		uint32_t sel[1] = { 0 };
+		int sel_ok = sdhci_command((uint16_t)((7u << 8) | SDHCI_CMD_RESP_48_BUSY |
+		    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), 1u << 16);
+		ring_puts("EMMC cmd7(rca1)=");
+		ring_puts(sel_ok == 0 ? "ok" : "fail");
+		ring_puts("\r\n");
+		(void)sel;
 		int direct_ok = sdhci_read_block_sdma(1, direct);
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
