@@ -11,6 +11,7 @@
  */
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IOPlatformExpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 
 extern "C" {
@@ -225,4 +226,35 @@ NativeEmmc::stop(IOService *provider)
 		fBlock = nullptr;
 	}
 	IOService::stop(provider);
+}
+
+/* Entry point of bsd_init (patches/xnu/sirius-usb-console.patch). No personality is installed:
+ * the board owns the controller, so the probe creates and starts the driver once, the way the
+ * PMGR nub of this port is started. The eMMC probe above has already run by now, and
+ * sirius_emmc_prepare() returns early, so the controller is not reset a second time. */
+extern "C" void
+sirius_native_emmc_probe(void)
+{
+	static NativeEmmc *device = nullptr;
+	if (device != nullptr) {
+		return;
+	}
+	NativeEmmc *candidate = new NativeEmmc;
+	if (candidate == nullptr || !candidate->init()) {
+		IOLog("NativeEmmc: allocation failed\n");
+		return;
+	}
+	IOService *platform = IOService::getPlatform();
+	if (platform != nullptr && !candidate->attach(platform)) {
+		IOLog("NativeEmmc: attach to the platform failed\n");
+		candidate->release();
+		return;
+	}
+	if (!candidate->start(platform)) {
+		IOLog("NativeEmmc: the driver did not start\n");
+		candidate->detach(platform);
+		candidate->release();
+		return;
+	}
+	device = candidate;
 }
