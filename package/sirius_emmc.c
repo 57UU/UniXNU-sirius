@@ -443,6 +443,7 @@ static uint8_t sdma_buffer[512] __attribute__((aligned(4096)));
 /* Read-only: which stream mapping does the boot chain leave for the storage stream id? Writing
  * SMR/S2CR while the SMMU is live is not safe from here, and a wrong write hangs the SoC. */
 static uint32_t emmc_smmu_report;
+static uint32_t emmc_smmu_fixed;
 
 static int
 emmc_smmu_probe(void)
@@ -468,6 +469,15 @@ emmc_smmu_probe(void)
 		uint32_t s2cr = *(volatile uint32_t *)(smmu + 0xc00u + 4u * i);
 		emmc_smmu_report = ((uint32_t)(i & 0xffu) << 16) | ((s2cr & 0xffu) << 8) |
 		    ((s2cr >> 16) & 3u);
+		/* The stream is already matched and valid, only its action is wrong (abort). Flip that
+		 * one field to bypass: no SMR write and no new slot, which is the smallest change that
+		 * makes the storage DMA legal. Nothing of this stream is in flight - the command line is
+		 * idle and no transfer is armed at this point. */
+		if (((s2cr >> 16) & 3u) == 0) {
+			*(volatile uint32_t *)(smmu + 0xc00u + 4u * i) = 1u;
+			__asm__ volatile ("dsb sy" ::: "memory");
+			emmc_smmu_fixed = (*(volatile uint32_t *)(smmu + 0xc00u + 4u * i) == 1u) ? 1u : 0u;
+		}
 		return 0;
 	}
 	emmc_smmu_report = 0xffffffffu;   /* no mapping for 0x140 at all */
@@ -517,6 +527,8 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 	if (tc <= 0) {
 		ring_puts("EMMC smmu140=");
 		ring_hex(emmc_smmu_report, 8);
+		ring_puts(" fixed=");
+		ring_dec(emmc_smmu_fixed);
 		ring_puts(" cmd17 ok, no TC int=");
 		ring_hex(sdhci_read16(SDHCI_INT_STATUS), 4);
 		ring_puts(" err=");
@@ -676,7 +688,7 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
-		int direct_ok = sdhci_read_block(1, direct);
+		int direct_ok = sdhci_read_block_sdma(1, direct);
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
 		}

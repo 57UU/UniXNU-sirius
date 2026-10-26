@@ -1051,3 +1051,28 @@ EMMC cmd17 ok, no TC int=0000 err=0000 st=01f802f6   ← DAT Line Active 永远�
 4. 再次 `dsb sy`，并且**在写之前确保没有该流的传输在途**（命令线空闲、无 DAT active）。
 
 若再挂，就换用 context-bank 正规路径（CBAR/CBA2R/SCTLR + 页表），不要直接改 S2CR。
+
+### SMMU bypass 已安全应用，但数据阶段仍不完成（2026-10-26 21:55）
+
+按"最小改动"思路，只把匹配 `0x140` 那个 SMR 的 **S2CR 从 0（abort）改成 1（bypass）**，
+不写 SMR、不新建 slot。结果：
+
+```
+EMMC smmu140=00000000 fixed=1 cmd17 ok, no TC int=0000 err=0000 st=01f802f6
+```
+
+- `fixed=1`：写入生效并读回确认，**整机没有挂**（证明之前的挂死确实来自"SMR 先于 S2CR"的顺序错误）；
+- 但 **CMD17 仍然没有 Transfer Complete**，`DAT Line Active` 依旧保持，PIO 也依旧返回陈旧字。
+
+**因此 SMMU 不是（唯一的）原因。** 现在还剩下的候选：
+
+1. **数据采样 / DLL**：`dll=6000642c`（PDN+RST 置位）、`dllst=0`（bit7 未锁定）。SDCC v1.108 在
+   默认速度下通常旁路 DLL，但若启动链把它关掉而控制器又依赖它采样，数据阶段就会挂住。
+   下一步应实现 `sdhci_msm_dll_init()` 的序列（`CORE_DLL_CONFIG` 0x200 / `CORE_DLL_STATUS` 0x208
+   / `CORE_DLL_CONFIG_2` 0x254 / `CORE_DLL_USR_CTL` 0x388），把 DLL 拉起来后再试。
+2. **卡的 8 位总线与 CMD6(BUS_WIDTH)**：`hostctl=38` 说明控制器是 8 位；如果卡其实还在 1 位
+   （bootloader 用 CMD6 设过、但被我们后续的 CMD0/CMD1 复位清掉了），数据相位会对不上。
+   可以先用 1 位（清 hostctl bit5）再试一次，成本很低。
+3. `CORE_VENDOR_SPEC3=02626440` 里的位含义未知，需要对照 `sdhci-msm.c` 的 v5 分支解读。
+
+**给下一次的建议顺序**：先试"1 位总线"（改一行），再试 DLL 初始化，最后才回到 SMMU/寄存器细节。
