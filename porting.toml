@@ -37,6 +37,8 @@ procedure = [
   "Compile the hardware tree through the payload step (prototype: dtc -I dts -O dtb -i <soc>/dts dts/sirius.dts).",
 ]
 findings = [
+  "board.toml gained build-sirius-emmc.py in the archive list next to the USB console entry.",
+  "board.toml lists build-sirius-emmc.py alongside the other archives, because the SDCC1 probe is compiled the same way as the USB console and joins the same force-loaded archive.",
   "Format 2 replaced the hand-written ADT generator of the legacy port (scripts/make-sirius-adt.py) with a board DTS: the payload step compiles the tree and derives kernel.macho.adt from it.",
   "The arm-io base is derived from the exported nodes, not written by hand: the GIC at 0x17a00000 makes the window start at 0x17000000, which XNU reads as the SoC base.",
   "The legacy port set ipad_identity = true; in format 2 the same identity is the OS profile's [adt] tables, so the board only states its deviations.",
@@ -61,7 +63,7 @@ evidence = [
 id = "firmware"
 status = "implemented"
 components = ["DarwinBoot"]
-paths = ["scripts/make-uboot-payload.py", "drivers/DarwinBoot/**", "board.toml"]
+paths = ["scripts/make-uboot-payload.py", "drivers/DarwinBoot/**"]
 inputs = [
   "The device runs sirius-distro (mainline Linux) and its boot partition carries U-Boot 2026.07 with EFI_LOADER, the UEFI boot manager, GOP through vidconsole and EFI block volumes over FAT.",
   "UniXNU.efi is built on the host by ./unixnu build package; DarwinBoot.efi is built from drivers/DarwinBoot.",
@@ -77,6 +79,7 @@ procedure = [
   "U-Boot boots UniXNU when /EFI/UniXNU/BOOTUNIXNU exists on the vendor partition and boots Linux otherwise.",
 ]
 findings = [
+  "The eMMC work adds no firmware component: the payload still boots through U-Boot with the same marker file.",
   "U-Boot's UEFI services are enough for UniXNU, DarwinBoot and XNU: no Mu-Silicium platform port is needed for this board.",
   "DarwinBoot's GIC-500 pre-configuration (the iBoot role) is what lets the kernel pass lockdown and start kexts on this SoC.",
   "The pre-configuration must not enable the EL1 virtual timer PPI early: on SDM710 that is INTID 19 and it fires before ArmCpu installs its handler.",
@@ -98,7 +101,7 @@ evidence = [
 id = "cpu"
 status = "implemented"
 components = ["ArmCpu"]
-paths = ["drivers/ArmCpu/**", "dts/sirius.dts", "board.toml"]
+paths = ["drivers/ArmCpu/**",  "dts/sirius.dts"]
 inputs = [
   "Eight Kryo 360 cores at Affinity1 0x000..0x700, boot CPU cpu0; cpu0-5 Cortex-A55, cpu6-7 Cortex-A75.",
   "GIC-500 distributor 0x17a00000/0x10000, redistributor 0x17a60000/0x100000, stride 0x20000.",
@@ -113,6 +116,7 @@ procedure = [
   "Build the kernel, then read the boot-progress TOPO line to confirm the topology and the probe decision.",
 ]
 findings = [
+  "The eMMC bring-up does not touch the CPU selection or the ArmCpu driver; board.toml only gained an archive entry.",
   "The boot-progress TOPO row confirms the kernel topology on hardware: boot=0 max=7 nums=01234567.",
   "With sheng-smp=1 the native ArmCpu claims every /cpus nub; without it the kernelcache AppleARMCPU takes the nubs and panics with \"CPU configuration in device tree is invalid\" because it requires /cpus/max_cpus.",
   "AppleARMCPU still wins the nubs at the current stage, which is the open IOKit blocker.",
@@ -134,7 +138,7 @@ evidence = [
 id = "memory"
 status = "implemented"
 components = []
-paths = ["dts/sirius.dts", "board.toml"]
+paths = ["dts/sirius.dts"]
 inputs = [
   "Usable DRAM 0x17d6c0000 from 0x80000000 (6 GiB model: 2 GiB then 0xfd6c0000 at 0x100000000).",
   "The framebuffer handed over by U-Boot sits at 0x9c000000 (1080x2240 splash).",
@@ -147,6 +151,7 @@ procedure = [
   "Read the MEM row of the boot-progress panel and compare it with the DTS range.",
 ]
 findings = [
+  "The eMMC probe maps two register windows (GCC and SDCC1) and reads only; the payload memory map is unchanged.",
   "The single contiguous range is what DarwinBoot's window allocation and the ADT handoff require; the two physical banks are described as one range on purpose.",
 ]
 completion = [
@@ -178,6 +183,7 @@ procedure = [
   "Follow the storage guide to choose an eMMC driver path, then select it and record the checkpoint.",
 ]
 findings = [
+  "The SDCC1 probe is the first storage code on this port; it identifies the card but does not mount anything yet.",
   "SDCC1 at 0x7c4000 is reachable as an SDHCI 3.0 host (ver=6c02) and the boot chain leaves its clocks, power and bus width programmed; the register window, capabilities and present state all read plausibly.",
   "The card clock was the first real blocker: gcc_sdcc1_apps_clk_src sat in MND mode with M=0 N=0 D=0xff, so no valid card clock reached the eMMC and every command timed out with a floating response. Programming the Linux 400 kHz entry (BI_TCXO/12*1/4) made the card answer CMD1 with OCR 0x40ff8080.",
   "CMD2 and CMD3 still get no response while CMD1 works, so identification stops before the CID/RCA are known; the next checks are DAT0-busy before CMD2 and the inter-command clock delays.",
@@ -212,6 +218,7 @@ procedure = [
   "Build kernel, payload and volume, boot, and read the panel: stage lines, TOPO, PROBE, MEM and panic text.",
 ]
 findings = [
+  "The panel gained an EMMC row (step, version, capabilities, state, clock, power, clock-branch halts) next to the USB row, so the storage bring-up is visible without a serial link.",
   "The USB row (drawn by this panel) labels its six values after what they now carry - step, txev, rxev, chars, echo, poll - because they were first wired to register names and had drifted.",
   "The panel is the readable kernel log of this port: it renders the console, the TOPO/PROBE rows and panic() output.",
   "Since the panic snapshot patch the panel re-renders at panic time, so the rows are not a stale frame.",
@@ -245,6 +252,7 @@ procedure = [
   "Follow the input guide once a touch controller is known, then select an implementation.",
 ]
 findings = [
+  "The SDCC1 probe does not touch the ADT buttons, so the input row and its hold/voldown/volup mapping are unchanged.",
   "No input component is selected; the button node exists so that BSPlatform and MobileGestalt read a coherent product.",
 ]
 completion = [
@@ -346,7 +354,7 @@ evidence = []
 id = "power"
 status = "planned"
 components = []
-paths = ["dts/sirius.dts", "board.toml"]
+paths = ["dts/sirius.dts"]
 inputs = [
   "No suspend/resume path exists; the boot-progress panel is the only power-facing behaviour so far.",
 ]
@@ -358,6 +366,7 @@ procedure = [
   "Follow the power guide to add the PMIC and battery controls once the platform expert is stable.",
 ]
 findings = [
+  "The eMMC probe does not vote any RPMH resource; it re-enables the GCC SDCC1 branches that the boot chain had already set.",
   "Reset works through PSCI (the stage-3 reset loop proved it).",
 ]
 completion = [
@@ -377,7 +386,7 @@ evidence = [
 id = "packaging"
 status = "implemented"
 components = ["XnuPrelink"]
-paths = ["board.toml", "scripts/make-uboot-payload.py", "scripts/build-xnu-4k-baseline.sh", "dts/**"]
+paths = [ "scripts/make-uboot-payload.py",  "scripts/build-xnu-4k-baseline.sh",  "dts/**"]
 inputs = [
   "The payload FAT volume is the flashed artifact of this port; there is no boot.img.",
   "The prelink inputs (kernel path, roots, slide, early security initializer) come from the OS profile; the board does not override them.",
@@ -390,6 +399,7 @@ procedure = [
   "./unixnu build kernel, ./unixnu build package, then bash scripts/build-darwinboot.sh (or the CI workflow), ./unixnu build payload, and finally make-uboot-payload.py --output the volume to flash.",
 ]
 findings = [
+  "The eMMC probe ships in the same force-loaded archive as the USB console, so the package list and payload layout are unchanged.",
   "Format 2 generates kernel.macho.adt from the DTS, so the legacy ADT script is retired; make-uboot-payload.py still finishes the volume because U-Boot needs the EFI binaries inside it.",
   "scripts/build-xnu-4k-baseline.sh is a copy of the UniXNU script with one board deviation: the boot-progress interlock only requires the source crypto provider.",
   "The legacy build applied patches/xnu/*.patch by glob (56 files); format 2 applies only what the series list names, and the ARM64 and OS series assume the two files they omit are present. native-smp-secondary.patch sets MAX_CPUS 8 and Affinity1 core numbering; sheng-platform-power.patch supplies the bsd_init.c block that zzz-boot-progress.patch quotes as context (CONFIG_XNU_SHENG_PMGR is off, so its code compiles to nothing). Both now live in the sdm710 SoC series, which applies before the OS series.",
@@ -424,7 +434,7 @@ evidence = [
 id = "diagnostics"
 status = "implemented"
 components = []
-paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**"]
+paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "scripts/build-sirius-emmc.py"]
 inputs = [
   "The panel and the serial console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
 ]
@@ -436,6 +446,7 @@ procedure = [
   "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
+  "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
   "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",
   "The USB panel row names its fields after what they hold (step, txev, rxev, chars, echo, poll) instead of the register names they were first wired to, so a photograph can be read without the source.",
