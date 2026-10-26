@@ -209,6 +209,7 @@ procedure = [
   "Build kernel, payload and volume, boot, and read the panel: stage lines, TOPO, PROBE, MEM and panic text.",
 ]
 findings = [
+  "The USB row (drawn by this panel) labels its six values after what they now carry - step, txev, rxev, chars, echo, poll - because they were first wired to register names and had drifted.",
   "The panel is the readable kernel log of this port: it renders the console, the TOPO/PROBE rows and panic() output.",
   "Since the panic snapshot patch the panel re-renders at panic time, so the rows are not a stale frame.",
 ]
