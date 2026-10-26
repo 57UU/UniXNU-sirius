@@ -1057,6 +1057,62 @@ sirius_emmc_probe(void)
 		sirius_emmc_signature = ((uint32_t)sector[0] << 24) | ((uint32_t)sector[1] << 16) |
 		    ((uint32_t)sector[2] << 8) | (uint32_t)sector[3];
 		sirius_emmc_step = 6;
+
+		/* GPT header: entry array LBA at 0x48, entry count at 0x50, entry size at 0x54. */
+		uint32_t entries_lba = (uint32_t)sector[0x48] | ((uint32_t)sector[0x49] << 8) |
+		    ((uint32_t)sector[0x4a] << 16) | ((uint32_t)sector[0x4b] << 24);
+		uint32_t entries = (uint32_t)sector[0x50] | ((uint32_t)sector[0x51] << 8) |
+		    ((uint32_t)sector[0x52] << 16) | ((uint32_t)sector[0x53] << 24);
+		uint32_t entry_size = (uint32_t)sector[0x54] | ((uint32_t)sector[0x55] << 8) |
+		    ((uint32_t)sector[0x56] << 16) | ((uint32_t)sector[0x57] << 24);
+		ring_puts("EMMC gpt lba=");
+		ring_dec(entries_lba);
+		ring_puts(" count=");
+		ring_dec(entries);
+		ring_puts(" size=");
+		ring_dec(entry_size);
+		ring_puts("\r\n");
+
+		uint8_t table[512];
+		if (entry_size >= 128u && entry_size <= 512u && entries != 0) {
+			unsigned per_sector = 512u / entry_size;
+			unsigned shown = 0;
+			/* The table spans several sectors (four 128-byte entries per sector), so walk
+			 * them instead of reporting only the first four partitions. */
+			for (unsigned sector_index = 0; sector_index * per_sector < entries &&
+			    shown < 84; sector_index++) {
+				if (sdhci_read_block_adma2(entries_lba + sector_index, table) != 0) {
+					break;
+				}
+			for (unsigned e = 0; e < per_sector && shown < 84; e++) {
+				const uint8_t *entry = table + e * entry_size;
+				bool used = false;
+				for (unsigned i = 0; i < 16; i++) {
+					if (entry[i] != 0) {
+						used = true;
+					}
+				}
+				if (!used) {
+					continue;
+				}
+				uint32_t first = (uint32_t)entry[0x20] | ((uint32_t)entry[0x21] << 8) |
+				    ((uint32_t)entry[0x22] << 16) | ((uint32_t)entry[0x23] << 24);
+				ring_puts("EMMC part first=");
+				ring_dec(first);
+				ring_puts(" name=");
+				for (unsigned i = 0; i < 36; i++) {
+					uint16_t ch = (uint16_t)entry[0x38u + 2u * i] |
+					    ((uint16_t)entry[0x39u + 2u * i] << 8);
+					if (ch == 0) {
+						break;
+					}
+					sirius_usb_log_char(ch < 0x80 ? (char)ch : '?');
+				}
+				ring_puts("\r\n");
+				shown++;
+			}
+			}
+		}
 		return;
 	}
 	sirius_emmc_step = 4;
