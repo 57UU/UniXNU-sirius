@@ -214,6 +214,9 @@ static struct {
 	uint32_t    last_event[2];
 	uint32_t    tx_delay_ms;
 	uint64_t    echoes;
+	uint32_t    cmd_fail;
+	uint32_t    tx_event;
+	uint32_t    rx_event;
 } ud;
 
 static inline uint32_t
@@ -740,6 +743,7 @@ ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
 		if (!(v & DEPCMD_CMDACT)) {
 			uint32_t status = (v >> 12) & 0xf;
 			if (status) {
+				ud.cmd_fail = (status << 12) | (ep << 4) | (cmd & 0xfu);
 				printf("SIRIUS USB: ep%u cmd %u status %u\n", ep, cmd, status);
 				return -1;
 			}
@@ -750,6 +754,7 @@ ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
 		}
 		sirius_usb_busy_wait(1);
 	}
+	ud.cmd_fail = (0xfu << 12) | (ep << 4) | (cmd & 0xfu);   /* timeout */
 	printf("SIRIUS USB: ep%u cmd %u timeout\n", ep, cmd);
 	return -1;
 }
@@ -806,16 +811,15 @@ static const uint8_t ud_cfg_desc[67] = {
 	5, 0x24, 0x01, 0x00, 1,                         /* call management: data iface 1 */
 	4, 0x24, 0x02, 0x02,                            /* ACM: line coding/control-line requests */
 	5, 0x24, 0x06, 0, 1,                            /* union: control 0, data 1 */
-	/* The addresses must name the physical endpoints this driver actually configures:
-	 * 0x85 = EP5 interrupt IN, 0x83 = EP3 bulk IN, 0x02 = EP2 bulk OUT. Advertising 0x82/0x81/0x01
-	 * sent the host's IN tokens to endpoints that were never enabled, so the port existed but the
-	 * console mirror never left the device. */
-	7, 5, 0x85, 0x03, 0x10, 0x00, 16,               /* ep 0x85 interrupt IN, 16 bytes */
+	/* These are USB endpoint numbers, not physical ones: the core derives the physical endpoint
+	 * as 2 * ep + direction, so 0x82 is physical 5, 0x81 is physical 3 and 0x01 is physical 2 -
+	 * exactly what this driver configures. Naming 0x85/0x83/0x02 pointed the host at physical
+	 * 11/7/4, which do not exist here, so no transfer ever completed. */
+	7, 5, 0x82, 0x03, 0x10, 0x00, 16,               /* ep 0x82 interrupt IN, 16 bytes */
 	9, 4, 1, 0, 2, 0x0a, 0x00, 0x00, 0,             /* data iface 1 alt 0: bulk IN/OUT */
-	/* High-speed bulk endpoints must advertise 512 bytes: with 64 the host logs
-	 * "bulk endpoint 0x2 has invalid maxpacket 64" and never issues an IN token. */
-	7, 5, 0x83, 0x02, 0x00, 0x02, 0,                /* ep 0x83 bulk IN, 512 */
-	7, 5, 0x02, 0x02, 0x00, 0x02, 0,                /* ep 0x02 bulk OUT, 512 */
+	/* High-speed bulk endpoints must advertise 512 bytes, not 64. */
+	7, 5, 0x81, 0x02, 0x00, 0x02, 0,                /* ep 0x81 bulk IN, 512 */
+	7, 5, 0x01, 0x02, 0x00, 0x02, 0,                /* ep 0x01 bulk OUT, 512 */
 };
 static uint8_t ud_line_coding[7] = {
 	0x00, 0xc2, 0x01, 0x00, 0, 0, 8,                /* 115200 8N1 (informational on USB) */
@@ -855,9 +859,9 @@ ud_configure(void)
 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG | (2u << 16), 0, 0, 0) ||
 	    ud_epcmd(EP_NOTIFY, DEPCMD_SETEPCONFIG, (3u << 1) | (16u << 3) | (2u << 17), (1u << 8) | (EP_NOTIFY << 25), 0) ||
 	    ud_epcmd(EP_NOTIFY, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
-	    ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3), (1u << 8) | (EP_RX << 25), 0) ||
+	    ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (512u << 3), (1u << 8) | (EP_RX << 25), 0) ||
 	    ud_epcmd(EP_RX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
-	    ud_epcmd(EP_TX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3) | (1u << 17),
+	    ud_epcmd(EP_TX, DEPCMD_SETEPCONFIG, (2u << 1) | (512u << 3) | (1u << 17),
 	    (1u << 8) | (EP_TX << 25), 0) ||
 	    ud_epcmd(EP_TX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
 		printf("SIRIUS USB: data endpoints setup failed\n");
@@ -906,10 +910,10 @@ ud_ep0_config(void)
 	ud_epcmd(EP_NOTIFY, DEPCMD_SETEPCONFIG, (3u << 1) | (16u << 3) | (2u << 17),
 	    (1u << 8) | (EP_NOTIFY << 25), 0);
 	ud_epcmd(EP_NOTIFY, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-	ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3),
+	ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (512u << 3),
 	    (1u << 8) | (EP_RX << 25), 0);
 	ud_epcmd(EP_RX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
-	ud_epcmd(EP_TX, DEPCMD_SETEPCONFIG, (2u << 1) | (64u << 3) | (1u << 17),
+	ud_epcmd(EP_TX, DEPCMD_SETEPCONFIG, (2u << 1) | (512u << 3) | (1u << 17),
 	    (1u << 8) | (EP_TX << 25), 0);
 	ud_epcmd(EP_TX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
 	dwc_wr(DALEPENA, 0x3u | (1u << EP_RX) | (1u << EP_TX) | (1u << EP_NOTIFY));
@@ -1041,6 +1045,7 @@ ud_event(uint32_t ev)
 	unsigned type = (ev >> 6) & 0xf;
 	unsigned status = (ev >> 12) & 0xf;
 	if (ep == EP_RX && type == 1) {         /* something arrived from the host */
+		ud.rx_event = ev;
 		uint32_t n = (ev >> 16) & 0xffffu;
 		if (n > UD_RX_SIZE) {
 			n = UD_RX_SIZE;
@@ -1059,6 +1064,7 @@ ud_event(uint32_t ev)
 		return;
 	}
 	if (ep == EP_TX && type == 1) {         /* bulk IN complete */
+		ud.tx_event = ev;
 		ud.tx_busy = false;
 		return;
 	}
@@ -1124,10 +1130,13 @@ ud_poll(void)
 		/* Live evidence for the panel: how many events the core delivered and how many are
 		 * still queued. A stuck zero means the controller is not posting events at all. */
 		sirius_usb_smmu = (uint32_t)ud.events;
-		sirius_usb_pll = (uint32_t)ud.echoes;
-		sirius_usb_gcc = (uint32_t)ud.configured;
-		sirius_usb_clk = (uint32_t)ud.tx_busy;
-		sirius_usb_smmu = (uint32_t)ud.chars;
+		sirius_usb_pll = ud.cmd_fail != 0 ? ud.cmd_fail : (uint32_t)ud.echoes;
+		/* FIFO RAM allocation: if these are zero the data endpoints have no FIFO, which makes
+		 * SETTRANSFRESOURCE succeed while no transfer is ever executed. */
+		sirius_usb_gcc = ud.tx_event;          /* last bulk IN completion event */
+		sirius_usb_clk = ud.rx_event;          /* last bulk OUT completion event */
+		sirius_usb_smmu = (uint32_t)ud.chars;  /* bytes submitted on bulk IN */
+		sirius_usb_pll = (uint32_t)ud.echoes;  /* round trips from the echo path */
 		sirius_usb_dwc = (uint32_t)ud.polls;
 	}
 }

@@ -711,3 +711,45 @@ if (boot_progress_active()) { boot_progress_putc(c); return; }
 补充：`GCTL=0x00102000`（device mode）、`DCTL=0x80000000`（RUN）、`DSTS` 有连接状态、
 事件环正常（reset/connect 事件都能收到并处理），说明控制器本身工作正常，问题局限在
 端点命令/传输层。
+
+### ✅ USB CDC-ACM 内核控制台打通（2026-10-26 15:45）
+
+**主机第一次收到了内核启动日志，不再需要拍屏幕：**
+
+```
+$ sudo python3 scripts/capture-usb-console.py --wait 170 --duration 160 --output /tmp/epnum.log
+captured 3813 bytes
+```
+
+日志开头就是真正的内核输出：
+
+```
+Darwin Kernel Version 23.6.0: Sun Oct 25 15:46:38 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837
+pmap_startup() init/release time: 6170 microsec
+vm_page_bootstrap: 47443 free pages, 18093 wired pages
+...
+lockdown_mode: lockdown mode in nvram is off
+```
+
+### 根因：USB 端点号 ≠ 物理端点号
+
+DWC3 的物理端点号是 `phys = 2 × USB端点号 + 方向`：
+
+| 描述符里应写 | 物理端点 | 驱动配置的常量 |
+| --- | --- | --- |
+| `0x01` EP1 OUT | 2 | `EP_RX` |
+| `0x81` EP1 IN | 3 | `EP_TX` |
+| `0x82` EP2 IN | 5 | `EP_NOTIFY` |
+
+之前为了"让描述符和物理端点一致"把它改成了 `0x83/0x02/0x85`，那对应物理端点 7/4/11 ——
+**这块核上不存在**，所以主机的 IN token 全部落空：`DALEPENA=0x2F` 正常、`DEPCMD` 返回成功、
+TRB 地址正确，但**永远没有传输完成事件**（这正是我们看到的 `tx_event=0`）。
+
+改回 `0x81/0x01/0x82` 后立刻通。顺带确认了这条链上其它部分是好的：PHY、时钟、SMMU、
+FIFO RAM（`TXFIFO0/1/2`、`RXFIFO0` 都已由启动链分配）、EP0 重配置、控制台镜像。
+
+### 经验
+
+- 面板 `tx_event`/`rx_event`（事件字）比任何推断都直接：`0` 就是"该端点从未完成过传输"，
+  与"命令被接受、地址正确"同时出现时，几乎一定是端点号/映射错，而不是时钟或 DMA 问题；
+- 调试期间加的 **echo 通道**（往端口写、设备原样回送）很有用，它把问题限制在"设备→主机"这一侧。
