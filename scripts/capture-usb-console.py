@@ -65,17 +65,22 @@ def main():
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     # The driver replays its whole ring buffer as soon as the host sends any byte,
     # because otherwise the log is only handed over once, at enumeration.
-    try:
-        poke = open(port, 'wb', buffering=0)
-        poke.write(b'\n')
-        poke.close()
-    except OSError:
-        pass
     total = 0
     end = time.time() + args.duration if args.duration else None
     with open(args.output, 'ab') as log:
         try:
+            next_poke = 0.0
             while end is None or time.time() < end:
+                # Keep asking: the driver replays its ring on any host byte, and the
+                # request is only served while its pump is running.
+                if time.time() >= next_poke:
+                    try:
+                        poke = open(port, 'wb', buffering=0)
+                        poke.write(b'\n')
+                        poke.close()
+                    except (OSError, TypeError):
+                        pass
+                    next_poke = time.time() + 1.0
                 if port is None:
                     if not args.follow:
                         break
@@ -84,7 +89,7 @@ def main():
                         break
                 print(f'capturing {port} -> {args.output}', file=sys.stderr)
                 try:
-                    fd = os.open(port, os.O_RDONLY | os.O_NOCTTY)
+                    fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
                 except OSError as error:
                     print(f'{port}: {error}', file=sys.stderr)
                     port = None
@@ -97,8 +102,17 @@ def main():
                 attrs[2] &= ~termios.CRTSCTS
                 attrs[4] = attrs[5] = termios.B115200
                 termios.tcsetattr(fd, termios.TCSANOW, attrs)
+                next_poke = 0.0
                 try:
                     while end is None or time.time() < end:
+                        # Any byte makes the driver replay its ring buffer, and the
+                        # request only succeeds while its pump is alive.
+                        if time.time() >= next_poke:
+                            try:
+                                os.write(fd, b'\n')
+                            except OSError:
+                                pass
+                            next_poke = time.time() + 1.0
                         ready, _, _ = select.select([fd], [], [], 0.5)
                         if not ready:
                             continue

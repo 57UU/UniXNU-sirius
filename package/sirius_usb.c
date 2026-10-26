@@ -1062,7 +1062,11 @@ ud_event(uint32_t ev)
 		/* Any byte from the host means "send me the log again": the ring is otherwise only handed
 		 * over once, at enumeration, so a capture that starts a moment too late sees nothing. */
 		if (n != 0) {
+			/* Rewind and immediately pump: the boot-time loop that normally drives the
+			 * console is long gone by the time a host asks for the log again. */
 			ud.tx_pos = 0;
+			ud.tx_delay_ms = 0;
+			ud_tx_pump();
 		}
 		if (n != 0 && !ud.tx_busy) {
 			for (uint32_t i = 0; i < n; i++) {

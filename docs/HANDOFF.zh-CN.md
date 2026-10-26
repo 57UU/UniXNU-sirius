@@ -1151,3 +1151,43 @@ R1 解码：`CURRENT_STATE`(bits[12:9]) = **4 = TRAN**，`READY_FOR_DATA`(bit8) 
 **尚未做的**：完整移植该 kext 需要适配 SoC（我们 SDM670 的 GCC/DWC3/SMMU 地址与 SID `0x740`
 都不同）和 XNU 版本（它对应 Darwin22 / XNU 8796.141.3），工作量大于当前收益；优先借用它的
 SMMU 提交顺序与日志轮询思路。
+
+## eMMC 第五阶段：对照 U-Boot 逐项排除（2026-10-27 00:50）
+
+这一轮按用户建议，直接对照 **U-Boot 的 `drivers/mmc/msm_sdhci.c` 与 `drivers/mmc/sdhci.c`**
+（这才是本机真正能读 eMMC 的实现），逐项排除了若干猜测：
+
+| 项目 | U-Boot 的做法 | 我们的实测 | 结论 |
+| --- | --- | --- | --- |
+| DLL | `clock < 100MHz` 时**故意**置 `CORE_DLL_RST` + `CORE_DLL_PDN` | `dll=6000642c`（PDN+RST） | **一致，DLL 不是问题** |
+| `CORE_VENDOR_SPEC` | 写 POR 值 `0xa9c` | `vspec=00000a9c` | **一致** |
+| v5 核的 MCI 初始化 | `mci_removed=true` → 跳过 `SDCC_MCI_POWER`/`HC_MODE` | — | 不需要 |
+| `TIMEOUT_CONTROL` | 每个数据命令前写 `0x0e` | `timeout-in=0e`（本来就是） | **一致，不是问题** |
+| SDHCI 分频器 | MSM **不使用**内部整除（Linux 明确注释），速率取自 GCC | `clock=0407` 写不进去 | **正常**，卡时钟就是 GCC 的 400 kHz |
+| 供电电压 | 由板级 regulator 决定 | **DTS: `vqmmc = vreg_l5b_1p8`（1.8V）** | 我们原本是 3.0V → 已改成 1.8V（`power=0b`、`hc2=0a`） |
+
+### 当前最可疑的一条
+
+e63 之后关掉了"先做一次直接读"的路径，结果 **CMD1 不再应答**：
+
+```
+EMMC resp-after-cmd1=ffffffff  ready=no
+```
+
+而只要先跑过数据命令（里面有约 2 秒自旋），CMD1 就能拿到真实的 `40ff8080`。
+已尝试加 300 ms 延时 —— **无效**。所以不是简单的上电等待，更像是：
+
+> 卡停留在 **TRAN** 态（R1 已证明），**CMD0 没有真正把它打回 idle**，于是 CMD1 被忽略；
+> 之前那次"能应答"很可能是因为数据命令路径里的某些操作改变了状态。
+
+下一次要验证的（按顺序）：
+
+1. 报告 **CMD0 是否真的完成**（本轮已加 `cmd0=ok/fail` 打印，但抓取窗口错过）；
+2. 在 CMD0 前先读一次 **CMD13 (RCA=1)** 确认卡状态；
+3. 若 CMD0 确实发出但无效，试 **拉低再恢复 SD 时钟** 或 **整控制器 `RESET_ALL` 后重新初始化**
+   （注意：`RESET_ALL` 会清 vendor 配置，之后必须重写 `CORE_VENDOR_SPEC=0xa9c`）。
+
+### 抓取通道的遗留问题
+
+启动时那个 45 秒内联轮询窗口过后，后台线程 `ud_thread` 似乎不再服务"主机请求重发"
+（实测 poke 无响应）。下次应确认该线程是否真的在运行，或改为在 panic/中断里也能泵送。

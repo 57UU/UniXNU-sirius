@@ -120,6 +120,8 @@ ring_dec(uint32_t value)
 #define SDHCI_PRESENT_STATE 0x24u
 #define SDHCI_POWER_CONTROL 0x29u
 #define SDHCI_HOST_CONTROL 0x28u
+#define SDHCI_TIMEOUT_CONTROL 0x2eu
+#define SDHCI_HOST_CONTROL2 0x3eu
 #define SDHCI_DMA_ADDRESS 0x00u
 #define SDHCI_CLOCK_CONTROL 0x2cu
 #define SDHCI_SOFTWARE_RESET 0x2fu
@@ -497,6 +499,19 @@ emmc_smmu_probe(void)
 
 static uint8_t adma_desc[128] __attribute__((aligned(128)));
 
+/* Everything a data command needs before the transfer is armed. U-Boot does the same two things
+ * for every data command: force the data timeout control to 0x0e and set the block length. */
+static void
+emmc_prepare_transfer(void)
+{
+	if (sdhci_read8(SDHCI_TIMEOUT_CONTROL) != 0x0eu) {
+		sdhci_write8(SDHCI_TIMEOUT_CONTROL, 0x0eu);
+	}
+	uint32_t status[1] = { 0 };
+	(void)sdhci_command_capture((uint16_t)((16u << 8) | SDHCI_CMD_RESP_48 |
+	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), 512u, status);
+}
+
 static int
 sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 {
@@ -508,6 +523,13 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 	if (emmc_clear_command_line() != 0) {
 		return -1;
 	}
+	ring_puts("EMMC timeout-in=");
+	ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
+	ring_puts("\r\n");
+	emmc_prepare_transfer();
+	ring_puts("EMMC timeout-set=");
+	ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
+	ring_puts("\r\n");
 	for (unsigned i = 0; i < 512; i++) {
 		sdma_buffer[i] = 0;
 	}
@@ -553,6 +575,18 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 		}
 		spin_us(50);
 	}
+	/* The card cannot send anything without the card clock, so record whether the controller
+	 * keeps it running while the data phase is pending. */
+	uint16_t clock_during = sdhci_read16(SDHCI_CLOCK_CONTROL);
+	uint32_t gcc_during = gcc_read(GCC_SDCC1_APPS_CBCR);
+	ring_puts("EMMC clock=");
+	ring_hex(sdhci_read16(SDHCI_CLOCK_CONTROL), 4);
+	ring_puts("\r\n");
+	ring_puts("EMMC clk-during=");
+	ring_hex(clock_during, 4);
+	ring_puts(" gcc=");
+	ring_hex(gcc_during, 8);
+	ring_puts("\r\n");
 	ring_puts("EMMC dat seen=");
 	ring_hex(seen, 4);
 	ring_puts(" trans=");
@@ -646,6 +680,47 @@ sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
 static int
 sdhci_read_block(uint32_t lba, uint8_t *out)
 {
+	/* Drop the SDHCI divider to one. The boot chain left 4 in bits[15:8], which halves the clock
+	 * twice more on top of the 400 kHz programmed at the root, and a card that slow accepts
+	 * commands but never streams data. The spec requires the SD clock to be off while the divider
+	 * is written, otherwise the write is simply ignored. */
+	{
+		uint16_t ctl = sdhci_read16(SDHCI_CLOCK_CONTROL);
+		sdhci_write16(SDHCI_CLOCK_CONTROL, (uint16_t)(ctl & ~SDHCI_CLK_SD_EN));
+		spin_us(1000);
+		sdhci_write16(SDHCI_CLOCK_CONTROL, (uint16_t)((ctl & 0x00c0u) | SDHCI_CLK_INTERNAL_EN));
+		for (unsigned waited = 0; waited < 20000; waited += 100) {
+			if ((sdhci_read16(SDHCI_CLOCK_CONTROL) & SDHCI_CLK_INTERNAL_STABLE) != 0) {
+				break;
+			}
+			spin_us(100);
+		}
+		sdhci_write16(SDHCI_CLOCK_CONTROL, (uint16_t)((sdhci_read16(SDHCI_CLOCK_CONTROL) & 0x00c0u) |
+		    SDHCI_CLK_INTERNAL_EN | SDHCI_CLK_SD_EN));
+		spin_us(1000);
+	}
+
+	/* The board wires vqmmc to a 1.8 V rail (sdm710-xiaomi-sirius.dts), so the card's I/O runs at
+	 * 1.8 V while the controller was left at 3.0 V. Commands survive that mismatch, multi-line
+	 * data does not, which is exactly what the empty DAT lines look like. */
+	{
+		uint8_t pc = sdhci_read8(SDHCI_POWER_CONTROL);
+		ring_puts("EMMC power-in=");
+		ring_hex(pc, 2);
+		ring_puts(" hc2=");
+		ring_hex(sdhci_read8(SDHCI_HOST_CONTROL2), 2);
+		ring_puts("\r\n");
+		sdhci_write8(SDHCI_POWER_CONTROL, 0x0bu);            /* 1.8 V */
+		uint8_t hc2 = sdhci_read8(SDHCI_HOST_CONTROL2);
+		sdhci_write8(SDHCI_HOST_CONTROL2, (uint8_t)(hc2 | 0x08u));   /* 1.8 V signalling */
+		spin_us(1000);
+		ring_puts("EMMC power-out=");
+		ring_hex(sdhci_read8(SDHCI_POWER_CONTROL), 2);
+		ring_puts(" hc2=");
+		ring_hex(sdhci_read8(SDHCI_HOST_CONTROL2), 2);
+		ring_puts("\r\n");
+	}
+
 	/* Keep the bus width and high-speed bit the boot chain set, and only clear the DMA select.
 	 * Switching to 1-bit here hung the boot: the probe runs before the USB console starts, so a
 	 * stall in it costs the only log channel. */
@@ -787,7 +862,7 @@ sirius_emmc_probe(void)
 	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
 	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
 		uint8_t direct[512];
-		int direct_ok = sdhci_read_block_adma2(1, direct);
+		int direct_ok = -1;   /* see below: identify the card first, on a clean command line */
 		if (direct_ok != 0) {
 			direct_ok = sdhci_read_block(1, direct);
 		}
@@ -951,19 +1026,32 @@ sirius_emmc_probe(void)
 		/* Full eMMC identification, the same order the kernel uses: CMD0 to idle, CMD1 until the
 		 * card leaves its power-up busy state, CMD2 for the CID, CMD3 for the RCA, CMD7 to select
 		 * it and CMD16 to fix the block length at 512. */
+		/* The card only starts answering once it has seen the card clock for a while: with the
+		 * data path exercised first (which spun for seconds) CMD1 answered, without it every
+		 * response came back all ones. Give it the clock and a plain wait before CMD0. */
+		spin_us(300000);
+
 		ring_puts("EMMC resp-before=");
 		for (unsigned i = 0; i < 4; i++) {
 			ring_hex(sdhci_read32(SDHCI_RESPONSE + 4u * i), 8);
 			ring_puts(" ");
 		}
 		ring_puts("\r\n");
-		sdhci_command((uint16_t)(0u << 8), 0u);
-		ring_puts("EMMC resp-after-cmd0=");
+		int cmd0_ok = sdhci_command((uint16_t)(0u << 8), 0u);
+		ring_puts("EMMC cmd0=");
+		ring_puts(cmd0_ok == 0 ? "ok" : "fail");
+		ring_puts(" resp-after-cmd0=");
 		ring_hex(sdhci_read32(SDHCI_RESPONSE), 8);
 		ring_puts("\r\n");
 		uint32_t ocr = 0;
 		int ready = -1;
 		for (unsigned tries = 0; tries < 200; tries++) {
+			if (tries == 50 || tries == 100 || tries == 150) {
+				/* Re-arm: if the first CMD1 was sent while the card was still in its old
+				 * state, repeating it after a pause is the cheap way back to idle. */
+				(void)sdhci_command((uint16_t)(0u << 8), 0u);
+				spin_us(2000);
+			}
 			if (sdhci_command_capture((uint16_t)((1u << 8) | SDHCI_CMD_RESP_48), 0x40ff8080u, 0) != 0) {
 				break;
 			}
