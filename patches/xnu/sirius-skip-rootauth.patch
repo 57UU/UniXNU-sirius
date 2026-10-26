@@ -1,0 +1,26 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index a98135b..7c43d1c 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1109,9 +1109,20 @@ bsd_init(void)
+ 				native_owner_root_checkpoint(autherr, owner, device);
+ 			}
+ #endif
+-			if (autherr && !owner_authorized) {
++			/* Bring-up instrument. The root this port mounts is the untouched OS image of the
++			 * IPSW, but the sealed-root answer is only trusted through the owner-root chain,
++			 * which sirius does not have yet. With sirius-skip-rootauth=1 the answer is recorded
++			 * on the console and the boot continues, which is what makes the rest of bsd_init
++			 * observable; without the boot argument the kernel panics exactly as before. */
++			unsigned sirius_skip_rootauth = 0;
++			PE_parse_boot_argn("sirius-skip-rootauth", &sirius_skip_rootauth,
++			    sizeof(sirius_skip_rootauth));
++			if (autherr && !owner_authorized && sirius_skip_rootauth == 0) {
+ 				panic("rootvp not authenticated after mounting");
+ 			}
++			if (autherr && sirius_skip_rootauth != 0) {
++				printf("sirius: rootvp authentication answered %d, skipped by boot arg\n", autherr);
++			}
+ #if defined(XNU_OWNER_ROOT_TRUST) && XNU_OWNER_ROOT_TRUST
+ 			{
+ 				extern volatile int native_owner_root_accepted;

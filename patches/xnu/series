@@ -6,3 +6,4 @@
 # A board change goes here when it must be a patch; follow
 # https://unixnu.com/xnu/source-and-patches#add-a-patch to export and order it.
 sirius-usb-console.patch
+sirius-skip-rootauth.patch

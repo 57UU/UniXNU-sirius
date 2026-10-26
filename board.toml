@@ -105,6 +105,9 @@ kernel_args = [
   "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
   "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
   "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
+  "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
+  "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
+                                    # patches/xnu/sirius-skip-rootauth.patch
   # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).
   #                                 # 2/3/4 additionally touch the branch clocks; on SDM710 that stalls the
   #                                 # bus and reboots the phone unless the clock sources are programmed first.
@@ -114,6 +117,9 @@ kernel_args = [
 # needs no seed, and chip_id is only used together with one.
 [payload.adt]
 chip_id = "8011"
+# The OS volume of the 21H461 image set, so /chosen/root-matching selects the APFS volume the
+# driver's OS window carries. The same value qualifies every device record of this OS profile.
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 
 # The Apple device-tree properties the OS profile does not already supply. Its [adt] tables
 # write /chosen, /product and the iPad7,1 identity (model iPad7,1, target-type J120); the board

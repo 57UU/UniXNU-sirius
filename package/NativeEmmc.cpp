@@ -548,14 +548,13 @@ NativeEmmc::start(IOService *provider)
 void
 NativeEmmc::stop(IOService *provider)
 {
-	if (fBlock) {
-		fBlock->terminate(kIOServiceSynchronous);
-		fBlock->release();
-		fBlock = nullptr;
-	}
+	/* Published services are never released here. They are still members of the registry, and
+	 * releasing an object a collection holds is exactly the over-release that panics with
+	 * "A kext releasing a(n) IOBlockStorageDriver has corrupted the registry" (OSObject.cpp:224).
+	 * The reference implementation keeps the same rule: started objects retain their owner
+	 * references for the lifetime of the kernel. */
+	fBlock = nullptr;
 	for (unsigned i = 0; i < fWindows; i++) {
-		fWindow[i]->terminate(kIOServiceSynchronous);
-		fWindow[i]->release();
 		fWindow[i] = nullptr;
 	}
 	fWindows = 0;
