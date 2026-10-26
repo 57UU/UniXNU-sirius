@@ -169,37 +169,45 @@ evidence = [
 
 [[area]]
 id = "storage"
-status = "planned"
+status = "host-verified"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md"]
+paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "scripts/derive-storage-bindings.py"]
 inputs = [
   "The reference unit is eMMC, not UFS: the UFS transport and its sheng integration points do not apply to this board.",
-  "No native storage driver exists yet; the expected first stop of the kernel is the root device wait.",
+  "The original kernelcache is the only source of IOStorageFamily's addresses; its kext images carry no symbol table, so they are derived from the dispatch table itself.",
 ]
 configuration = [
-  "No storage component is selected in board.toml; CONFIG_XNU_NATIVE_UFS is off in the defconfig.",
+  "board.toml lists build-sirius-emmc.py (the SDCC1 probe) and build-native-emmc.py (the IOKit block driver) in [kernel] archives; CONFIG_XNU_NATIVE_UFS stays off.",
+  "[userdata] carries the 512-byte geometry and the OS/SystemOS windows read from the device's own GPT.",
 ]
 procedure = [
-  "Follow the storage guide to choose an eMMC driver path, then select it and record the checkpoint.",
+  "Build the kernel with that archive list: the driver's storage imports are bound at the prelink slide and archived with it.",
+  "Read the evidence off the boot-progress console: the probe prints the GPT rows, the driver logs the block count it publishes.",
 ]
 findings = [
-  "The SDCC1 probe is the first storage code on this port; it identifies the card but does not mount anything yet.",
-  "SDCC1 at 0x7c4000 is reachable as an SDHCI 3.0 host (ver=6c02) and the boot chain leaves its clocks, power and bus width programmed; the register window, capabilities and present state all read plausibly.",
-  "The card clock was the first real blocker: gcc_sdcc1_apps_clk_src sat in MND mode with M=0 N=0 D=0xff, so no valid card clock reached the eMMC and every command timed out with a floating response. Programming the Linux 400 kHz entry (BI_TCXO/12*1/4) made the card answer CMD1 with OCR 0x40ff8080.",
-  "CMD2 and CMD3 still get no response while CMD1 works, so identification stops before the CID/RCA are known; the next checks are DAT0-busy before CMD2 and the inter-command clock delays.",
-  "The legacy port deliberately kept every UFS and owner-root flag off; the boot-progress interlock of UniXNU had to be relaxed for that reason.",
-  "The CDC console work lives in package/sirius_usb.c and does not change the storage blocker: the kernel still stops at the root device because no eMMC driver exists.",
+  "The data path works: ADMA2 reads return EFI PART from LBA 1, the GPT header parses (entries_lba=2, count=84, size=128) and 81 partitions with geometry are listed; boot 1179648..1310719, vendor 11010048..17301503, userdata 17301504..122142686.",
+  "Five conditions had to hold at once: the RCG2 encoding (CFG=0x2017, M=1, N=0xfc, D=0xfb), 1.8 V I/O (the board's vqmmc), the 32-bit interrupt/error map at 0x30/0x32/0x36, the ADMA descriptor address at 0x58/0x5c rather than 0x00, and cache maintenance (flush_dcache64) because the engine reads memory and not the CPU cache.",
+  "SMMU is not the blocker: the boot chain leaves it disabled (scr0=0x00230406, bit0=0) and writing S2CR hung the SoC twice, so the driver only reads SMMU state.",
+  "IOStorageFamily is a kext of the original kernelcache, so the archive form of the driver left IOBlockStorageDevice undefined at the kernel link (ld: 'a missing vtable usually means the first non-inline virtual member function has no definition').",
+  "The prelink slides every component by a constant: extents[].va = original + slide for each segment and bindings[] carries new_site = site + slide, so the addresses the driver needs are the kernelcache's plus the slide.",
+  "The dispatch table is identifiable without a live snapshot: of the 190 pinned slot names 176 are kernel exports, exactly one __DATA_CONST table matches all of them, the other 14 slots point at the kext's own BRK traps, the single constructor that stores table+16 forwards to the actual IOService constructor and the base destructor resolves to IOService's.",
+  "Eleven imports are bound (dispatch table, metaclass, protected constructor, base destructor and seven methods); when the prelinked kernel exists the derivation also checks it holds the same constructor at the slid address, so a wrong slide cannot pass.",
 ]
 completion = [
   "The eMMC registers, GPT and the OS/SystemOS windows are correct, the root volume mounts and launchd starts.",
 ]
 limits = [
-  "No storage driver and no root filesystem: the port currently stops before the root device.",
+  "Read-only: the transfer path has no write command and reportWriteProtection() says so.",
+  "The driver is linked and started from bsd_init, but no boot has run with it yet: whether IOBlockStorageDriver matches NativeEmmcBlock and publishes IOMedia is unverified on the device.",
+  "CMD7 still answers r1=00000000 while reads work, because the boot chain leaves the card selected.",
 ]
 next_action = [
-  "Inventory the eMMC controller (SDCC/MSDC) registers and interrupt lines from the vendor tree before selecting an implementation.",
+  "Flash the payload built from the current commit and record the boot-progress rows: the probe's GPT lines, the NativeEmmc log lines and whether an IOMedia or disk appears.",
 ]
-evidence = []
+evidence = [
+  { kind = "host", reference = "docs/HANDOFF.zh-CN.md", command = "./scripts/xnu-container.sh run bash -lc './unixnu build kernel --skip-setup -D ../sirius'", revision = "a47f0d6b4615c3cdebf92102400a1bc302eb6d73", result = "The kernel links with NativeEmmc in the image (kernel.macho sha256 372820eb1b2cd9ecee15d769d1296771d0c8141c2681626d54651a62473446b8); the GitHub macOS runner builds the same archive (kernel workflow run 40386710258)." },
+  { kind = "source", reference = "package/sirius_emmc.c", result = "SDCC1 bring-up, the ADMA2 read path and the GPT parse." },
+]
 
 [[area]]
 id = "display"
