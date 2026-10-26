@@ -434,6 +434,7 @@ procedure = [
 findings = [
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
   "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",
+  "The USB panel row names its fields after what they hold (step, txev, rxev, chars, echo, poll) instead of the register names they were first wired to, so a photograph can be read without the source.",
   "The CDC console hands the console ring to the host once per attach: the pump timing that works (a short inline poll loop that breaks after the ring is drained) delivered the 3813-byte boot log on every attempt, while longer loops and a DTR-gated pump delivered nothing, so that timing is treated as load-bearing until the periodic path runs during bsd_init.",
 ]
 completion = [

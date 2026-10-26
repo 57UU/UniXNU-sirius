@@ -383,9 +383,11 @@ static void draw(unsigned now) {
       snprintf(b,sizeof(b),"GIC stride=%x last redistributor read: offset=%x typer.lo=%x",
         armcpu_gic_stride,armcpu_gic_typer_probe[0],armcpu_gic_typer_probe[1]);
       line(30,b,0xff00ff88);
-      // USB console progress (kits/sirius/sirius_usb.c): the console section above is an early
-      // snapshot, so the driver's own step counters are what tell whether it reached DWC3.
-      snprintf(b,sizeof(b),"USB step=%u gcc=%08x clk=%08x smmu=%08x pll=%08x dwc=%08x",
+      // USB console progress (kits/sirius/sirius_usb.c). The console section above is an early
+      // snapshot, so these live counters are the evidence: step walks the bring-up, txev/rxev are
+      // the last bulk completion event words a non-zero value proves transfers execute, chars counts
+      // bytes submitted on bulk IN, echo counts host round trips, poll counts the driver's polls.
+      snprintf(b,sizeof(b),"USB step=%u txev=%08x rxev=%08x chars=%u echo=%u poll=%u",
         sirius_usb_step,sirius_usb_gcc,sirius_usb_clk,sirius_usb_smmu,sirius_usb_pll,sirius_usb_dwc);
       line(29,b,0xff00ff88);
     }
