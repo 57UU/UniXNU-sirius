@@ -61,6 +61,8 @@ archives = [
   "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
   "build-sirius-usb.py",              # the CDC-ACM log console (kits/sirius/sirius_usb.c)
   "build-sirius-emmc.py",             # read-only SDCC1 probe (kits/sirius/sirius_emmc.c)
+  # "build-native-emmc.py",          # the IOKit block driver: needs IOStorageFamily symbols at
+  #                                  # kernel link time, see docs/HANDOFF.zh-CN.md
 ]
 
 # The hardware description handed to the payload step. dts/sirius.dts describes the board
@@ -72,6 +74,18 @@ include_dirs = ["soc:dts"]
 # The payload volume: flashed to the vendor partition (mmcblk0p80, 3 GiB) as a FAT32 image and
 # read by U-Boot. dram_size is the observed usable DRAM of the 6 GiB model: 2 GiB at 0x80000000
 # plus 0xfd6c0000 at 0x100000000, and must equal the memory node of dts/sirius.dts.
+# The userdata partition carries the Darwin root. The geometry below was read from the device
+# itself (the SDCC1 probe parses the GPT): first/last LBA in 512-byte units as the GPT stores
+# them, which is also this eMMC's logical block size.
+[userdata]
+first_lba = 0x1080000              # 17301504
+last_lba = 0x747BFDE               # 122142686
+lba_bytes = 512
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
 [payload]
 volume = "SIRIUSESP"
 size_mib = 256

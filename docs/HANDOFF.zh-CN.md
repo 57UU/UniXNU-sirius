@@ -1355,3 +1355,75 @@ XNU 通过 ADMA2 读出 GPT 并遍历整个表项数组后得到的真实布局�
 - 在它之上实现 **IOKit 块设备**（或在 `bsd_init` 里直接把 `system`/`userdata` 交给 APFS）；
 - `CMD7` 仍然返回失败（`cmd7=fail`），但读操作可用（卡是 bootloader 选中的），后续应弄清原因；
 - 速度：目前每次读都重新走一遍完整初始化，正式驱动应把初始化与传输分离。
+
+## 下一步方向（对照 UniXNU 文档，2026-10-27 02:30）
+
+按 `docs/porting/ufs.md` 的存储里程碑，我们已经完成前四项，目标是把第五项"根挂载"做出来：
+
+| 里程碑 | 状态 |
+| --- | --- |
+| 硬件清单（控制器/时钟/复位/SMMU/DMA） | ✅ 全部实测 |
+| 主机访问（寄存器、时钟状态） | ✅ |
+| DMA 与命令完成 | ✅ ADMA2 + cache 维护 |
+| 块读取（容量、已知块） | ✅ GPT + 81 个分区几何 |
+| **根挂载（GPT 窗口 + IOMedia 发布）** | ⬅ 下一步 |
+| 持久化（写入） | 之后 |
+
+### 根文件系统的来源（`docs/concepts/userdata.md` + `docs/guide/userdata.md`）
+
+UniXNU 的根不在 `system`/`vendor`，而是写在 **`userdata` 分区**里，带一个 `SHNGROOT` 清单：
+窗口 `OS`（系统卷）与 `SystemOS`（Cryptex 系统卷），XNU 通过 `/chosen/root-matching` 按
+IOMedia 的 UUID 选中根。
+
+**已用今天打通的读取能力测出该分区的真实几何**并写进 `board.toml`：
+
+```toml
+[userdata]
+first_lba = 0x1080000              # 17301504
+last_lba  = 0x747BFDE              # 122142686
+lba_bytes = 512
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+```
+
+`./unixnu build userdata --dry-run` 通过：OS 4918 MiB + SystemOS 3150 MiB，容量 50 GiB 足够。
+随后已启动真正的镜像构建（`./unixnu build userdata`）。
+
+### 参考实现：ShengUfs
+
+`https://github.com/UniXNU/ShengUfs`（`NativeUfs.cpp`）是同一件事的完成版：
+
+- `NativeUfs : IOService` 匹配 `IOPlatformDevice`（设备树节点）；
+- `NativeUfsBlock : IOBlockStorageDevice` 实现 `doAsyncReadWrite` 等，IOStorageFamily 据此发布 IOMedia；
+- `RootPublication.h` 负责按 `SystemOS → 其他 → OS` 的顺序准备/启动/发布各窗口；
+- `Info.plist` 声明 `IOClass`/`IOProviderClass`/`IOProbeScore`。
+
+### 已写好但暂未启用的驱动
+
+`package/NativeEmmc.cpp`（`IOService` + `IOBlockStorageDevice`，只读，走 `sirius_emmc_read_block`）
+和 `scripts/build-native-emmc.py` 已经写好并**能编译通过**，但归档条目在 `board.toml` 里被注释停用：
+
+> **阻塞点**：`IOBlockStorageDevice` 属于 **IOStorageFamily kext**，它的符号只在
+> `emit_prelink.py` 合并原始 kernelcache 时出现。而 `[kernel] archives` 里的归档是
+> **force-load 进内核二进制**的，链接阶段找不到这些符号：
+>
+> ```
+> "__ZN20IOBlockStorageDeviceC2EPK11OSMetaClass", referenced from: ... ld: symbol(s) not found
+> ```
+>
+> 可选的三条路：
+> 1. 让内核链接允许未定义符号（`-Wl,-undefined,dynamic_lookup`），由 prelink 阶段解析；
+> 2. 把驱动作为**独立 kext** 构建并加入 prelink，而不是放进内核归档；
+> 3. 不用 IOStorageFamily，改为在 prelink 后用其他方式发布根（不推荐，等于重写一层）。
+>
+> 先要确认 sheng 设备是怎么解决这一点的（它的 `ShengUfs` 同样引用这些符号）。
+
+### C 侧的公共接口（驱动可直接调用）
+
+```c
+int sirius_emmc_prepare(void);                             /* 幂等初始化 */
+int sirius_emmc_read_block(unsigned long long lba, void *); /* 读一个 512 字节块 */
+extern unsigned long long sirius_emmc_total_blocks;         /* 由 GPT 的 last usable LBA 得到 */
+```

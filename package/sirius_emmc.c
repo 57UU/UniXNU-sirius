@@ -1097,8 +1097,12 @@ sirius_emmc_probe(void)
 				}
 				uint32_t first = (uint32_t)entry[0x20] | ((uint32_t)entry[0x21] << 8) |
 				    ((uint32_t)entry[0x22] << 16) | ((uint32_t)entry[0x23] << 24);
+				uint32_t last = (uint32_t)entry[0x28] | ((uint32_t)entry[0x29] << 8) |
+				    ((uint32_t)entry[0x2a] << 16) | ((uint32_t)entry[0x2b] << 24);
 				ring_puts("EMMC part first=");
 				ring_dec(first);
+				ring_puts(" last=");
+				ring_dec(last);
 				ring_puts(" name=");
 				for (unsigned i = 0; i < 36; i++) {
 					uint16_t ch = (uint16_t)entry[0x38u + 2u * i] |
@@ -1116,4 +1120,88 @@ sirius_emmc_probe(void)
 		return;
 	}
 	sirius_emmc_step = 4;
+}
+
+
+/* ------------------------------------------------------------------------- *
+ * Public interface for the IOKit block driver.
+ *
+ * The probe above is a diagnostic path that reports into the USB console ring.
+ * The driver needs the same hardware setup without the reporting, plus a plain
+ * block read it can call from doAsyncReadWrite().
+ * ------------------------------------------------------------------------- */
+
+static bool sirius_emmc_ready;
+
+/* Filled by sirius_emmc_prepare() from the GPT header: the drive the block driver publishes. */
+unsigned long long sirius_emmc_total_blocks;
+
+/* Idempotent: maps the windows, sets the I/O voltage, programs the 400 kHz card clock, finds the
+ * card's RCA and selects it. Returns 0 when a block read can be issued. */
+int
+sirius_emmc_prepare(void)
+{
+	if (sirius_emmc_ready) {
+		return 0;
+	}
+	if (emmc_base == 0) {
+		emmc_base = ml_io_map(SDCC1_PA, SDCC1_SIZE);
+		gcc_base = ml_io_map(GCC_PA, GCC_SIZE);
+	}
+	if (emmc_base == 0 || gcc_base == 0) {
+		return -1;
+	}
+	uint8_t hc2 = sdhci_read8(SDHCI_HOST_CONTROL2);
+	sdhci_write8(SDHCI_POWER_CONTROL, 0x0bu);
+	sdhci_write8(SDHCI_HOST_CONTROL2, (uint8_t)(hc2 | 0x08u));
+	spin_us(1000);
+	sdhci_write32(SDHCI_INT_ENABLE, 0xffffffffu);
+	sdhci_write16(SDHCI_SIGNAL_ENABLE, 0x0000u);
+	sdhci_write8(SDHCI_TIMEOUT_CONTROL, 0x0eu);
+	if (emmc_set_card_clock_400k() != 0) {
+		return -1;
+	}
+	/* Last usable LBA from the GPT header bounds the block device. */
+	{
+		uint8_t header[512];
+		if (sdhci_read_block_adma2(1, header) == 0) {
+			unsigned long long last = 0;
+			for (unsigned i = 0; i < 8; i++) {
+				last |= (unsigned long long)header[0x30 + i] << (8 * i);
+			}
+			sirius_emmc_total_blocks = last + 1;
+		}
+	}
+	uint32_t status[1] = { 0 };
+	for (uint32_t rca = 1; rca <= 8; rca++) {
+		if (sdhci_command_capture((uint16_t)((13u << 8) | SDHCI_CMD_RESP_48 |
+		    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), rca << 16, status) == 0) {
+			(void)sdhci_command_capture((uint16_t)((7u << 8) | SDHCI_CMD_RESP_48_BUSY |
+			    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), rca << 16, status);
+			sirius_emmc_ready = true;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+/* Reads one 512-byte block. The caller's buffer may be any alignment: the transfer goes into the
+ * page-aligned static buffer and is copied out. */
+int
+sirius_emmc_read_block(uint64_t lba, void *buffer)
+{
+	if (!sirius_emmc_ready && sirius_emmc_prepare() != 0) {
+		return -1;
+	}
+	if (lba > 0xffffffffu) {
+		return -1;
+	}
+	uint8_t sector[512];
+	if (sdhci_read_block_adma2((uint32_t)lba, sector) != 0) {
+		return -1;
+	}
+	for (unsigned i = 0; i < 512; i++) {
+		((uint8_t *)buffer)[i] = sector[i];
+	}
+	return 0;
 }
