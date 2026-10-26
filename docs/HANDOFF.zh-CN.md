@@ -1450,3 +1450,47 @@ int sirius_emmc_prepare(void);                             /* 幂等初始化 */
 int sirius_emmc_read_block(unsigned long long lba, void *); /* 读一个 512 字节块 */
 extern unsigned long long sirius_emmc_total_blocks;         /* 由 GPT 的 last usable LBA 得到 */
 ```
+
+## 存储驱动的链接问题：根因已查清（2026-10-27 04:10）
+
+前面记录的"`IOBlockStorageDevice` 符号未定义"只是表象。真正的机制是 UniXNU 的
+**存储 ABI 绑定（storage ABI binding）**流程，共三步：
+
+1. **`scripts/audit-storage-interface.py`** 生成 `build/storage-abi/interface-audit.json`：
+   用公开的 IOStorageFamily 源码编译一个参考对象，再从**原始 kernelcache** 里定位
+   `IOBlockStorageDevice` 的 vtable 和全部 190 个方法槽的地址（含 14 个纯虚槽）。
+2. **`scripts/build-virtio-mmio-bindings.py`** 用该 json 把驱动的目标文件**改写**：
+   把 vtable 的重定位直接改成那些绝对地址，于是对象里不再有未定义符号。
+3. 之后内核链接自然通过。
+
+sheng 的 `[kernel] archives` 里就有这两行，所以它能链上；我们的驱动没有这一步。
+
+### 为什么 Linux 上做不了（本轮实测）
+
+审计脚本所需的证据有两类，都只能在 macOS 上产出：
+
+| 证据 | 作用 | 我们的实测 |
+| --- | --- | --- |
+| `xcrun dwarfdump` | 校验参考对象的 `IOBlockStorageDevice` 大小 = 0x90 | Linux 无 xcrun |
+| `build/darwinboot-storage-native-metadata/gdb-stop.json` | **实机 GDB 观察**运行中内核的 metaclass 内存、TCR/SCTLR 等寄存器 | 不可得 |
+| `build/image4-ignition/aes-interface-audit.json` | 提供 `superClassLink/className/classSize` 成员偏移 | 不可得 |
+| macOS SDK 的 `TargetConditionals.h` / SDK 版本 | 记录平台头文件来源 | 用 `scripts/linux/TargetConditionals.h` 可绕过 |
+
+已经试过并推进到的程度：
+
+- 参考对象**能编译通过**（需要加 `-Wno-error -Wno-missing-designated-field-initializers`，
+  因为新 clang 的 `-Werror` 会拦 `kt_zshared` 这类告警）；
+- 候选 provenance 检查**通过**：我们的 `kernel.json` 里 `original_sha256 = f18b4df865405f2a...`，
+  与脚本固定的值一致（同一份 21H461 kernelcache）；
+- 卡在 `gdb-stop.json` 与 `aes-interface-audit.json`。
+
+### 结论与三条出路
+
+1. **在 Mac 上生成审计证据**（上游的做法）：需要 Xcode + 在 GDB 下跑一次原始内核取样。
+   之后 json 是通用的，可以提交到设备仓库复用。
+2. **向上游要一条 Linux 路径**：审计里对 `gdb-stop.json` 的依赖可以用"静态字节比对"替代
+   （metaclass 的 `superClassLink/classSize` 已经在 vtable 分析里得到了），但这属于 UniXNU 改动。
+3. **绕开 IOStorageFamily**：不发布 IOMedia，改用其他方式给内核提供根（不推荐，等于重写一层）。
+
+**注意**：本轮为验证方便临时改过 UniXNU 的 `scripts/audit-storage-interface.py`（跳过
+dwarfdump、SDK 路径、`-Werror`），已用 `git checkout` 还原。
