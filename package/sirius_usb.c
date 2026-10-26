@@ -1147,6 +1147,9 @@ ud_poll(void)
 void
 sirius_usb_poll(void)
 {
+	if (ud.tx_delay_ms > 0) {
+		ud.tx_delay_ms--;
+	}
 	if (ud.live) {
 		ud_poll();
 	}
@@ -1517,7 +1520,7 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	 * seconds after RUN covers the whole enumeration window. */
 	/* Give the host a moment to create the tty and let the capture attach: cdc_acm keeps no
 	 * backlog for a port that is not open yet, so a burst sent at configure time is lost. */
-	ud.tx_delay_ms = 3000;
+	ud.tx_delay_ms = 3000;   /* milliseconds, counted by the inline loop below */
 	for (unsigned ms = 0; ms < 45000; ms++) {
 		sirius_usb_busy_wait(1000);
 		if (ud.tx_delay_ms > 0) {

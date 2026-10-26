@@ -753,3 +753,21 @@ FIFO RAM（`TXFIFO0/1/2`、`RXFIFO0` 都已由启动链分配）、EP0 重配置
 - 面板 `tx_event`/`rx_event`（事件字）比任何推断都直接：`0` 就是"该端点从未完成过传输"，
   与"命令被接受、地址正确"同时出现时，几乎一定是端点号/映射错，而不是时钟或 DMA 问题；
 - 调试期间加的 **echo 通道**（往端口写、设备原样回送）很有用，它把问题限制在"设备→主机"这一侧。
+
+### 证据文件
+
+`docs/evidence/sirius-usb-console-20261026-1605.log` —— 从 `/dev/ttyACM0` 直接抓下来的内核日志
+（3813 字节），不再依赖拍照。复现命令：
+
+```sh
+# 主机侧先起抓取，再重启手机
+sudo python3 scripts/capture-usb-console.py --wait 60 --duration 190 --output /tmp/boot.log
+```
+
+### 仍可改进（不影响"能用"）
+
+- 现在每次连接只能拿到**连接时刻**环形缓冲里的内容（3813 字节），之后的实时输出依赖
+  `sirius_usb_poll()`（挂在 boot-progress 刷新上）。若要让整个启动过程持续流式输出，
+  把 `ud_poll()` 再挂一个更早、更密的内核周期路径（例如 boot-progress 的每秒刷新已有，
+  但要确认它在 bsd_init 阶段确实被调用）。
+- `capture-usb-console.py` 建议增加 `--follow`（持续追加写入）以便长时间抓取。

@@ -1,0 +1,61 @@
+Darwin Kernel Version 23.6.0: Sun Oct 25 15:46:38 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837
+pmap_startup() init/release time: 6277 microsec
+pmap_startup() delayed init/release of 0 pages
+vm_page_bootstrap: 47445 free pages, 18091 wired pages, (up to 0 of which are delayed free)
+VM boostrap: 51 maps, 153 entries and 128 holes available
+Maximum number of VM swap files: 5
+zones                   : 0xfffffff01f800000 - 0xfffffff61f800000 (24G)
+gIOKitPageableFixed3    : 0xfffffff61f800000 - 0xfffffff625800000 (96M)
+compressor              : 0xfffffff625800000 - 0xfffffff65d80f000 (896M)
+bufferhdr               : 0xfffffff65d80f000 - 0xfffffff65d89b000 (560K)
+zone_meta               : 0xfffffff65d89b000 - 0xfffffff663978000 (96M)
+gIOKitPageableFixed1    : 0xfffffff663978000 - 0xfffffff669978000 (96M)
+gIOKitPageableFixed0    : 0xfffffff669978000 - 0xfffffff66f978000 (96M)
+gIOKitPageableFixed2    : 0xfffffff66f978000 - 0xfffffff675978000 (96M)
+kmem_ptr_range_meta     : 0xfffffff675978000 - 0xfffffff675a81000 (1060K)
+kmem_data_range         : 0xfffffff675a81000 - 0xfffffffa91d49000 (16G)
+bsd_pageable            : 0xfffffffa91d49000 - 0xfffffffa925cb000 (8M)
+kmem_sprayqtn_range     : 0xfffffffa925cb000 - 0xfffffffa9841c000 (94M)
+io_submap               : 0xfffffffa9841c000 - 0xfffffffa98c1c000 (8M)
+kmem_ptr_range          : 0xfffffffa98c1c000 - 0xfffffffbf95fc000 (5G)
+ipc_kernel_copy_map     : 0xfffffffbf95fc000 - 0xfffffffbf9dfc000 (8M)
+ipc_kernel_map          : 0xfffffffbf9dfc000 - 0xfffffffbfbdfc000 (32M)
+mb                      : 0xfffffffbfbdfc000 - 0xfffffffbffdfc000 (64M)
+kmem_large_ranges[1]    : 0 - 0 (0B)
+kmem_large_ranges[2]    : 0 - 0 (0B)
+kmem_large_ranges[3]    : 0 - 0 (0B)
+kmem_large_ranges[4]    : 0xfffffffa93195200 - 0xfffffffa9841c000 (82M)
+kmem_large_ranges[5]    : 0xfffffff6f92da000 - 0xfffffffa91d49000 (14G)
+"vm_compressor_mode" is 8
+mapping deprecated VM_PAGER_FREEZER_DEFAULT to VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP
+Unable to find vm tag  for btlog
+zone_init: pgzalloc  0xfffffff01f800000:0xfffffff01f85f000 (380K) [47 slots]
+zone_init: map VM    0xfffffff01f85f000:0xfffffff105eb7000 (3686M)
+zone_init: map RO    0xfffffff105eb7000:0xfffffff152b7f000 (1228M)
+zone_init: map GEN0  0xfffffff152b7f000:0xfffffff2391d7000 (3686M)
+zone_init: map GEN1  0xfffffff2391d7000:0xfffffff31f82f000 (3686M)
+zone_init: map GEN2  0xfffffff31f82f000:0xfffffff405e87000 (3686M)
+zone_init: map GEN3  0xfffffff405e87000:0xfffffff4ec4df000 (3686M)
+zone_init: map DATA  0xfffffff4ec4df000:0xfffffff61f800000 (4915M)
+zone_init: metadata  0xfffffff65d8ab000:0xfffffff6638ab000 (96M)
+zone_init: metabits  0xfffffff6638ab000:0xfffffff663968000 (756K)
+zone_init: extra     0:0 (0B)
+VM bootstrap done: 39 maps, 112 entries and 116 holes left
+Firehose configured: 16 chunks, 8 io pages
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+Log queues configured: slot count: 64, per-slot size: 32768, total size: 2097152
+Long logs support configured: size: 16384
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+mig_table_max_displ = 54 mach_kobj_count = 372
+debug_log_init: Error!! gPanicBase is still not initialized
+debug_log_init: Error!! gPanicBase is still not initialized
+kdp_core zlib memory 0x7000
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+iBoot version: 
+iBoot Stage 2 version: 
+IONVRAM.cpp:initImageFormat:1433 - NVRAM size is 8192 bytes
+IONVRAM.cpp:getNVRAMProperties:1244 - _bankSize=0x2000, _bankCount=0x1, _currentBank=0
+IONVRAMCHRPHandler.cpp:unserializeImage:479 - NVRAM : commonPartitionOffset - 0x30, commonPartitionSize - 0x800, systemPartitionOffset - 0xffffffff, systemPartitionSize - 0
+lockdown_mode: lockdown mode in nvram is off
