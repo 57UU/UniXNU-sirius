@@ -1537,3 +1537,22 @@ kernelcache。这与上游 `build-software-aes-bindings.py` 用 `scripts/data/` 
 尚未完成（下一阶段）：驱动已链接、入口已接进 `bsd_init`，但还没有在真机上启动验证，
 也没有确认 IOStorageFamily 的 `IOBlockStorageDriver` 是否匹配到我们发布的
 `NativeEmmcBlock` 并生成 IOMedia。
+
+### CI 产出的完整镜像（2026-10-27，run 40390633460）
+
+`kernel payload` 一次 dispatch 就出完整镜像（10 分 08 秒），无本机依赖：
+
+| 文件 | sha256 |
+| --- | --- |
+| `kernel.macho`（51 MiB） | `127d23ee3fc2955777e20bea8e9fdd060ee712a8095e81b585a7a62c76382bd5` |
+| `payload.img`（256 MiB，刷 vendor 分区） | `05f4d610de79d1ed5ef5ffd23c198a5e8ff7111a1537d6433edbded9a2b374dd` |
+
+日志证据：
+
+- `archive-11-build-native-emmc.log`：
+  `NativeEmmc: 11 storage imports bound from the recorded kernelcache (f18b4df865405f2a, slide -0x1000000)`
+- `Verify the recorded storage bindings` 步骤：`--check` 通过，且断言绑定的 dispatch table /
+  构造器地址落在 prelink 后 IOStorageFamily 的段内；
+- `kernel.macho` 里有 66 个 `NativeEmmc`/`NativeEmmcBlock` 符号。
+
+`payload.json` 里 `hardware_tested` 仍是 `false`：镜像没上过真机。
