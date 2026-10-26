@@ -14,6 +14,7 @@ typedef unsigned int uint32_t;
 typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
 typedef unsigned long vm_offset_t;
+typedef unsigned long long uint64_t;
 typedef _Bool bool;
 #define true 1
 #define false 0
@@ -97,7 +98,16 @@ ring_dec(uint32_t value)
 #define GCC_SDCC1_APPS_D 0x26038u
 
 /* Qualcomm SDHCI vendor registers (sdhci-msm.c): CORE_HC_MCLK_SEL and the pad power switch. */
-#define MSM_CORE_VENDOR_SPEC 0x10cu
+/* sdhci-msm v5 vendor offsets (sdhci_msm_v5_offset). The 0x10c used earlier belongs to the older
+ * MCI layout, which is why it read back zero. */
+#define MSM_CORE_MCI_VERSION 0x318u
+#define MSM_CORE_DLL_CONFIG 0x200u
+#define MSM_CORE_DLL_STATUS 0x208u
+#define MSM_CORE_VENDOR_SPEC 0x20cu
+#define MSM_CORE_PWRCTL_STATUS 0x240u
+#define MSM_CORE_VENDOR_SPEC3 0x250u
+#define MSM_CORE_DLL_CONFIG_2 0x254u
+#define MSM_CORE_DLL_USR_CTL 0x388u
 
 /* SDHCI registers, byte offsets within the 4 KiB "hc" window. */
 #define SDHCI_BLOCK_SIZE 0x04u
@@ -109,6 +119,8 @@ ring_dec(uint32_t value)
 #define SDHCI_BUFFER 0x20u
 #define SDHCI_PRESENT_STATE 0x24u
 #define SDHCI_POWER_CONTROL 0x29u
+#define SDHCI_HOST_CONTROL 0x28u
+#define SDHCI_DMA_ADDRESS 0x00u
 #define SDHCI_CLOCK_CONTROL 0x2cu
 #define SDHCI_SOFTWARE_RESET 0x2fu
 #define SDHCI_INT_ENABLE 0x34u
@@ -126,6 +138,7 @@ ring_dec(uint32_t value)
 #define SDHCI_PS_CMD_INHIBIT (1u << 0)
 #define SDHCI_PS_DAT_INHIBIT (1u << 1)
 #define SDHCI_PS_CARD_INSERTED (1u << 16)
+#define SDHCI_PS_BUFFER_READ_ENABLE (1u << 11)
 
 /* Interrupt status bits. */
 #define SDHCI_INT_CMD_COMPLETE (1u << 0)
@@ -144,6 +157,7 @@ ring_dec(uint32_t value)
 
 /* Transfer mode fields. */
 #define SDHCI_TM_READ (1u << 4)
+#define SDHCI_TM_BLOCK_COUNT_ENABLE (1u << 1)
 
 /* Clock control bits. */
 #define SDHCI_CLK_INTERNAL_EN (1u << 0)
@@ -255,7 +269,10 @@ sdhci_command_capture(uint16_t command, uint32_t argument, uint32_t *response)
 	sdhci_write16(SDHCI_ERR_INT_STATUS, 0xffffu);
 	sdhci_write32(SDHCI_ARGUMENT, argument);
 	sdhci_write16(SDHCI_COMMAND, command);
-	if (sdhci_wait(SDHCI_INT_CMD_COMPLETE, 100000) <= 0) {
+	/* A 136-bit identification response may take longer than the 100 ms used for short commands:
+	 * wait a full second before declaring the command lost. */
+	unsigned timeout = (command & 0x3u) == SDHCI_CMD_RESP_136 ? 1000000u : 100000u;
+	if (sdhci_wait(SDHCI_INT_CMD_COMPLETE, timeout) <= 0) {
 		return -1;
 	}
 	if (response != 0) {
@@ -390,39 +407,88 @@ ring_fail(const char *stage)
 	ring_puts("\r\n");
 }
 
+extern vm_offset_t kvtophys(vm_offset_t va);
+
+#define SDHCI_TM_DMA (1u << 0)
+
+/* A page-aligned static buffer is physically contiguous, which is all SDMA needs. */
+static uint8_t sdma_buffer[512] __attribute__((aligned(4096)));
+
+/* Single-block read over SDMA: the boot chain left the controller in a DMA mode where the buffer
+ * port only returns one stale word, so the block is fetched by the data engine into memory
+ * instead of through the FIFO. */
+static int
+sdhci_read_block_sdma(uint32_t lba, uint8_t *out)
+{
+	vm_offset_t pa = kvtophys((vm_offset_t)sdma_buffer);
+	if (pa == 0) {
+		return -1;
+	}
+	for (unsigned i = 0; i < 512; i++) {
+		sdma_buffer[i] = 0;
+	}
+	sdhci_write32(SDHCI_DMA_ADDRESS, (uint32_t)pa);
+	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
+	sdhci_write16(SDHCI_BLOCK_COUNT, 1u);
+	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ | SDHCI_TM_BLOCK_COUNT_ENABLE | SDHCI_TM_DMA);
+	if (sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
+	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba) != 0) {
+		return -1;
+	}
+	if (sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000) <= 0) {
+		return -1;
+	}
+	sdhci_write16(SDHCI_INT_STATUS, 0xffffu);
+	for (unsigned i = 0; i < 512; i++) {
+		out[i] = sdma_buffer[i];
+	}
+	return 0;
+}
+
 /* Single-block read in PIO mode. Returns 0 when the whole 512-byte block was collected. */
 static int
 sdhci_read_block(uint32_t lba, uint8_t *out)
 {
+	/* Clear the DMA select but keep the bus width and high-speed bit the chain set up. */
+	uint8_t hostctl = sdhci_read8(SDHCI_HOST_CONTROL);
+	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)(hostctl & 0x38u));
 	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
 	sdhci_write16(SDHCI_BLOCK_COUNT, 1u);
-	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ);
+	sdhci_write16(SDHCI_TRANSFER_MODE, SDHCI_TM_READ | SDHCI_TM_BLOCK_COUNT_ENABLE);
 	/* The command index lives in bits 13:8 (SDHCI_MAKE_CMD in Linux); writing it into the flag
 	 * bits sends command 0 and the card never answers. */
 	if (sdhci_command((uint16_t)((17u << 8) | SDHCI_CMD_DATA_PRESENT | SDHCI_CMD_RESP_48 |
 	    SDHCI_CMD_CRC_CHECK | SDHCI_CMD_INDEX_CHECK), lba) != 0) {
 		return -1;      /* CMD17, READ_SINGLE_BLOCK */
 	}
+	/* PIO drain, the way the SDHCI spec describes it: the Buffer Read Enable bit in the present
+	 * state says a word is available, and the transfer is done when all 512 bytes are out. Reading
+	 * one word per interrupt-status poll lost data and reported failure even though the sector had
+	 * arrived. */
 	unsigned received = 0;
+	unsigned idle = 0;
 	while (received < 512) {
-		int ready = sdhci_wait(SDHCI_INT_BUFFER_READ_READY | SDHCI_INT_TRANSFER_COMPLETE, 100000);
-		if (ready <= 0) {
-			return -1;
-		}
-		if ((ready & SDHCI_INT_BUFFER_READ_READY) != 0) {
+		uint32_t state = sdhci_read32(SDHCI_PRESENT_STATE);
+		if ((state & SDHCI_PS_BUFFER_READ_ENABLE) != 0) {
 			uint32_t value = sdhci_read32(SDHCI_BUFFER);
 			out[received + 0] = (uint8_t)(value & 0xffu);
 			out[received + 1] = (uint8_t)((value >> 8) & 0xffu);
 			out[received + 2] = (uint8_t)((value >> 16) & 0xffu);
 			out[received + 3] = (uint8_t)((value >> 24) & 0xffu);
 			received += 4;
-			sdhci_write16(SDHCI_INT_STATUS, SDHCI_INT_BUFFER_READ_READY);
+			idle = 0;
+			continue;
 		}
-		if ((ready & SDHCI_INT_TRANSFER_COMPLETE) != 0) {
+		if ((sdhci_read16(SDHCI_INT_STATUS) & SDHCI_INT_TRANSFER_COMPLETE) != 0) {
 			sdhci_write16(SDHCI_INT_STATUS, SDHCI_INT_TRANSFER_COMPLETE);
 			break;
 		}
+		if (++idle > 200000) {
+			break;
+		}
+		spin_us(10);
 	}
+	sdhci_write16(SDHCI_INT_STATUS, 0xffffu);
 	return received == 512 ? 0 : -1;
 }
 
@@ -477,6 +543,14 @@ sirius_emmc_probe(void)
 	ring_hex(gcc_read(GCC_SDCC1_APPS_D), 8);
 	ring_puts(" vspec=");
 	ring_hex(sdhci_read32(MSM_CORE_VENDOR_SPEC), 8);
+	ring_puts(" corever=");
+	ring_hex(sdhci_read32(MSM_CORE_MCI_VERSION), 8);
+	ring_puts(" dll=");
+	ring_hex(sdhci_read32(MSM_CORE_DLL_CONFIG), 8);
+	ring_puts(" dllst=");
+	ring_hex(sdhci_read32(MSM_CORE_DLL_STATUS), 8);
+	ring_puts(" pwrctl=");
+	ring_hex(sdhci_read32(MSM_CORE_PWRCTL_STATUS), 8);
 	ring_puts("\r\n");
 
 	ring_puts("EMMC probe step=");
@@ -498,6 +572,113 @@ sirius_emmc_probe(void)
 	/* The eMMC is non-removable and this controller does not wire CARD_INSERTED, so the bit is
 	 * informational only: try the read and let the command result decide. */
 	sirius_emmc_step = 3;
+
+	/* Shortcut before any identification: the boot chain loaded this kernel from the eMMC, so the
+	 * card is already selected and in the transfer state with an RCA of its choosing. A selected
+	 * card answers CMD17 without caring about its RCA, so a plain block read can work without
+	 * CMD0/CMD1/CMD2/CMD3/CMD7 at all. */
+	if (emmc_clock_on((uint16_t)sirius_emmc_clock) == 0) {
+		uint8_t direct[512];
+		int direct_ok = sdhci_read_block_sdma(1, direct);
+		if (direct_ok != 0) {
+			direct_ok = sdhci_read_block(1, direct);
+		}
+		ring_puts("EMMC hostctl=");
+	ring_hex(sdhci_read8(SDHCI_HOST_CONTROL), 2);
+	ring_puts(" xfer=");
+	ring_hex(sdhci_read16(SDHCI_TRANSFER_MODE), 4);
+	ring_puts(" blk=");
+	ring_hex(sdhci_read16(SDHCI_BLOCK_SIZE), 4);
+	ring_puts(" dma=");
+	ring_hex(sdhci_read32(SDHCI_DMA_ADDRESS), 8);
+	ring_puts("\r\n");
+	ring_puts("EMMC direct-read=");
+		ring_puts(direct_ok == 0 ? "ok" : "fail");
+		ring_puts(" sig=");
+		for (unsigned i = 0; i < 8; i++) {
+			if (direct[i] >= 0x20 && direct[i] < 0x7f) {
+				sirius_usb_log_char((char)direct[i]);
+			} else {
+				sirius_usb_log_char('.');
+			}
+		}
+		ring_puts("\r\n");
+		if (direct_ok == 0) {
+			sirius_emmc_signature = ((uint32_t)direct[0] << 24) | ((uint32_t)direct[1] << 16) |
+			    ((uint32_t)direct[2] << 8) | (uint32_t)direct[3];
+			sirius_emmc_step = 6;
+
+			/* Parse the GPT header: the entry array LBA lives at 0x48, the entry count at 0x50
+			 * and the entry size at 0x54, all little endian. */
+			uint64_t entries_lba = 0;
+			for (unsigned i = 0; i < 8; i++) {
+				entries_lba |= (uint64_t)direct[0x48u + i] << (8 * i);
+			}
+			uint32_t entries = (uint32_t)direct[0x50] | ((uint32_t)direct[0x51] << 8) |
+			    ((uint32_t)direct[0x52] << 16) | ((uint32_t)direct[0x53] << 24);
+			uint32_t entry_size = (uint32_t)direct[0x54] | ((uint32_t)direct[0x55] << 8) |
+			    ((uint32_t)direct[0x56] << 16) | ((uint32_t)direct[0x57] << 24);
+			ring_puts("EMMC fifo=");
+			for (unsigned i = 0; i < 4; i++) {
+				ring_hex(sdhci_read32(SDHCI_BUFFER), 8);
+				ring_puts(" ");
+			}
+			ring_puts("\r\n");
+			ring_puts("EMMC words=");
+			for (unsigned i = 0; i < 8; i++) {
+				uint32_t w = ((uint32_t)direct[4 * i] << 24) | ((uint32_t)direct[4 * i + 1] << 16) |
+				    ((uint32_t)direct[4 * i + 2] << 8) | (uint32_t)direct[4 * i + 3];
+				ring_hex(w, 8);
+				ring_puts(" ");
+			}
+			ring_puts("\r\n");
+			ring_puts("EMMC gpt entries_lba=");
+			ring_hex((uint32_t)entries_lba, 8);
+			ring_puts(" count=");
+			ring_dec(entries);
+			ring_puts(" size=");
+			ring_dec(entry_size);
+			ring_puts("\r\n");
+
+			uint8_t table[512];
+			if (entry_size >= 128u && entry_size <= 512u && entries != 0 &&
+			    sdhci_read_block((uint32_t)entries_lba, table) == 0) {
+				unsigned per_sector = 512u / entry_size;
+				unsigned shown = 0;
+				for (unsigned e = 0; e < per_sector && shown < 4; e++) {
+					const uint8_t *entry = table + e * entry_size;
+					bool used = false;
+					for (unsigned i = 0; i < 16; i++) {
+						if (entry[i] != 0) {
+							used = true;
+						}
+					}
+					if (!used) {
+						continue;
+					}
+					uint64_t first = 0;
+					for (unsigned i = 0; i < 8; i++) {
+						first |= (uint64_t)entry[0x20u + i] << (8 * i);
+					}
+					ring_puts("EMMC part first=");
+					ring_hex((uint32_t)first, 8);
+					ring_puts(" name=");
+					for (unsigned i = 0; i < 36; i++) {
+						uint16_t ch = (uint16_t)entry[0x38u + 2u * i] |
+						    ((uint16_t)entry[0x39u + 2u * i] << 8);
+						if (ch == 0) {
+							break;
+						}
+						sirius_usb_log_char(ch < 0x80 ? (char)ch : '?');
+					}
+					ring_puts("\r\n");
+					shown++;
+				}
+			}
+			return;
+		}
+	}
+
 
 	/* The GPT header lives in LBA 1, so reading that sector both proves the data path and returns
 	 * the first real piece of the partition table. */
@@ -583,6 +764,9 @@ sirius_emmc_probe(void)
 			/* A 136-bit response has no index field, and Linux only sets the index check for
 			 * commands that carry MMC_RSP_OPCODE, so asking for it here makes the controller
 			 * reject the response. CRC stays on. */
+			ring_puts("EMMC cid try st=");
+			ring_hex(sdhci_read32(SDHCI_PRESENT_STATE), 8);
+			ring_puts("\r\n");
 			cid_ok = sdhci_command_capture((uint16_t)((2u << 8) | SDHCI_CMD_RESP_136 |
 			    SDHCI_CMD_CRC_CHECK), 0u, cid);
 			if (cid_ok != 0) {

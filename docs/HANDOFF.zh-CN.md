@@ -902,3 +902,48 @@ EMMC cid=no  rca FAIL int=8000 err=7fff st=01f800f1
 2. 或试 **CMD10 (SEND_CID, addressed)** / 直接 `CMD7(RCA=1) → CMD13 → CMD17`，
    绕过 136 位响应（CID 只是信息性的，读块只需要 RCA + SELECT + blocklen）；
 3. 若 DLL 没锁，需要在 vendor 块里按 `sdhci_msm_dll_init()` 的序列初始化 DLL 后再试。
+
+### eMMC 第三阶段：命令通到 CMD1，数据阶段仍未通（2026-10-26 21:00）
+
+**必须澄清的一点**：早先看到的 `sig=EFI ...` / `words=45464920` 很可能**不是我们读出来的数据**，
+而是 bootloader 读 GPT 时残留在控制器 FIFO 里的最后一个字。证据：把 FIFO 连续读 4 次，四次
+返回同一个值 `20494645`（"EFI "），说明读指针根本没有前进。
+
+因此现在的准确结论是：**数据阶段（DATA phase）还没有成功过一次**。
+
+已经确认可用的（都是硬证据）：
+
+| 项目 | 状态 |
+| --- | --- |
+| SDCC1 寄存器 | `ver=6c02`、`caps=762dc8b2`、`corever=1000006c`（v1.108）、`vspec=0xa9c`（上电默认） |
+| 时钟 | `gcc_sdcc1_apps_clk_src` 原本 MND 无效，改写成 400 kHz 后 `cfg=0/m=1/n=4/d=12` |
+| 命令阶段 | CMD0/CMD1 真实执行，`resp-after-cmd1=40ff8080`、`ready=yes` |
+| 卡状态 | OCR `0x40ff8080`（高容量、电压窗口正常） |
+| 电源/时钟控制 | `pwrctl=00000002`（BUS_ON 成功）、`clock=0407`、`power=0d` |
+
+**仍未通的**：CMD2（136 位响应）无响应、命令线随后卡死；以及数据阶段。
+
+试过并失败的（都在代码里留有注释）：
+
+| 尝试 | 结果 |
+| --- | --- |
+| PIO 读块（按 `BUFFER_READ_ENABLE` 位） | FIFO 返回同一个陈旧字 128 次 |
+| 把 `HOST_CONTROL` 的 DMA 选择从 ADMA2 改成 SDMA（PIO 路径） | 仍返回陈旧字 |
+| 单块传输启用 block count | 无变化 |
+| 整控制器 `RESET_ALL` 后自己重配时钟/电源/总线 | 数据变成全 0（卡状态被打乱） |
+| **SDMA 读块**（`SDHCI_DMA_ADDRESS` = 页对齐静态缓冲的物理地址，transfer mode 置 DMA 位） | 数据全 0 |
+
+**下一步的关键怀疑点**：
+
+1. **apps SMMU 的 SID**：SDCC1 的 DMA 走 SMMU（DTS 里 `iommus = <&apps_smmu 0x140 0xf>`）。
+   USB 那条线我们为 SID `0x740` 做过 guard，这里没有做——SDMA 的数据会被 SMMU 拦掉，
+   表现正是"传输完成但内存全 0"。下一次应当复用 `sirius_usb_smmu_guard()` 的思路给
+   **SID 0x140** 建立同样的旁路映射，再跑 SDMA。
+2. **PIO 的 FIFO 不前进**：可能是 `CORE_VENDOR_SPEC3`（v5 偏移 `0x250`）里的
+   "DMA/PIO 选择"或 vendor 的 `SDCC_MCI_...` 配置仍在 DMA 模式；或需要 `HOST_CONTROL`
+   的 DMA 选择真正切到 SDMA 且 `CORE_VENDOR_SPEC` 的对应位一起改。
+3. **CMD2 的 136 位响应**：DLL 处于掉电复位（`dll=6000642c`、`dllst=0` bit7=0），
+   长响应可能要求 DLL 锁定；按 `sdhci_msm_dll_init()` 初始化后再试。
+
+**建议的下一步顺序**：先做 SID 0x140 的 SMMU 旁路 + SDMA 读（最可能直接拿到 GPT），
+再做 DLL 与 CMD2（为了完整识别），最后才谈块设备/I-O 层。
