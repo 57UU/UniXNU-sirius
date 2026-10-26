@@ -61,8 +61,8 @@ archives = [
   "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
   "build-sirius-usb.py",              # the CDC-ACM log console (kits/sirius/sirius_usb.c)
   "build-sirius-emmc.py",             # read-only SDCC1 probe (kits/sirius/sirius_emmc.c)
-  # "build-native-emmc.py",          # the IOKit block driver: IOStorageFamily symbols only exist
-  #                                  # after prelink, see docs/HANDOFF.zh-CN.md
+  "build-native-emmc.py",             # the IOKit block driver (kits/sirius/NativeEmmc.cpp); its
+                                     # IOStorageFamily imports are bound to the original kernelcache
 ]
 
 # The hardware description handed to the payload step. dts/sirius.dts describes the board

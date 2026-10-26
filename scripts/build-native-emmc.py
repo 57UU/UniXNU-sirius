@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Compile the NativeEmmc IOKit driver against the recorded BSD ABI and archive it.
+"""Compile the NativeEmmc IOKit driver, bind its storage imports and archive both.
 
 Same shape as build-sirius-emmc.py: the driver is built as an external archive rather than a
-bsd/conf/files entry, because the XNU makefile generated from conf/files does not pick up a file
-added by a patch. The object joins libShengPlatformPower.a, the archive build-xnu force-loads when
-CONFIG_XNU_SHENG_PMGR=1.
+bsd/conf/files entry, because the XNU makefile generated from conf/files does not pick up a
+file added by a patch. The object joins libShengPlatformPower.a, the archive build-xnu
+force-loads when CONFIG_XNU_SHENG_PMGR=1.
+
+IOStorageFamily is a kext of the original kernelcache, not part of the XNU source, so the
+kernel link has no definition for the class the driver subclasses. derive-storage-bindings.py
+resolves the imports against the original kernelcache at the prelink slide and writes them as
+absolute symbols; original-bindings.o is archived next to the driver so the link resolves them
+without an IOStorageFamily definition.
 
 The C++ options below are the ones XNU's own kexts use: -fapple-kext gives OSDefineMetaClassAndStructors
 its definitions, and exceptions/RTTI are off in the kernel.
@@ -20,6 +26,9 @@ source = ROOT / 'kits/sirius/NativeEmmc.cpp'
 obj = OUT / 'NativeEmmc.o'
 record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/bsd_init.o.json')
                     .read_text().strip().rstrip(','))
+compiler = record['arguments'][0]
+if not Path(compiler).is_file():
+    compiler = 'xcrun clang'
 command, index = [], 0
 arguments = record['arguments']
 while index < len(arguments):
@@ -50,7 +59,24 @@ result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE
 if result.returncode:
     raise SystemExit(result.stdout[-6000:])
 
+# The bindings are absolute addresses, so they are derived from the kernelcache and the
+# prelink slide after the object exists: the derivation refuses any import it cannot name.
+derivation = subprocess.run(['python3', str(ROOT / 'scripts/derive-storage-bindings.py'), '--object', str(obj)],
+                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+(OUT / 'derive.log').write_text(derivation.stdout)
+if derivation.returncode:
+    raise SystemExit(derivation.stdout[-6000:])
+
+assembly = OUT / 'original-bindings.S'
+bindings = OUT / 'original-bindings.o'
+compiled = subprocess.run([*compiler.split(), '-target', 'arm64-apple-ios17.0', '-Werror',
+                           '-Wno-incompatible-sysroot', '-c', str(assembly), '-o', str(bindings)],
+                          capture_output=True, text=True)
+if compiled.returncode:
+    raise SystemExit((compiled.stdout + compiled.stderr)[-4000:])
+
 archive = ROOT / 'build/sheng-platform-power/libShengPlatformPower.a'
 archive.parent.mkdir(parents=True, exist_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', archive, obj], check=True)
-print(f'NativeEmmc: added {obj.name} to {archive}')
+subprocess.run(['xcrun', 'ar', 'rcs', archive, obj, bindings], check=True)
+print(derivation.stdout.strip().splitlines()[0])
+print(f'NativeEmmc: added {obj.name} and {bindings.name} to {archive}')
