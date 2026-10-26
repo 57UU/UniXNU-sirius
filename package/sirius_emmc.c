@@ -15,6 +15,9 @@ typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
 typedef unsigned long vm_offset_t;
 typedef unsigned long long uint64_t;
+typedef uint64_t addr64_t;
+typedef int boolean_t;
+#define TRUE 1
 typedef _Bool bool;
 #define true 1
 #define false 0
@@ -423,6 +426,7 @@ ring_fail(const char *stage)
 }
 
 extern vm_offset_t kvtophys(vm_offset_t va);
+extern void flush_dcache64(addr64_t pa, unsigned long len, boolean_t phys);
 
 #define SDHCI_TM_DMA (1u << 0)
 
@@ -514,7 +518,11 @@ emmc_smmu_probe(void)
 #define ADMA2_TRAN_VALID 0x21u
 #define ADMA2_END 0x02u
 
-static uint8_t adma_desc[128] __attribute__((aligned(128)));
+/* 256 bytes so a 128-byte aligned slice always fits inside, whatever the physical layout. The
+ * virtual alignment does not survive translation: the observed physical address of a 128-byte
+ * aligned array was only 4-byte aligned, and the ADMA engine rejects a misaligned table with a
+ * descriptor-fetch error. */
+static uint8_t adma_desc[256] __attribute__((aligned(256)));
 
 /* Everything a data command needs before the transfer is armed. U-Boot does the same two things
  * for every data command: force the data timeout control to 0x0e and set the block length. */
@@ -531,10 +539,13 @@ static int
 sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 {
 	vm_offset_t buf_pa = kvtophys((vm_offset_t)sdma_buffer);
-	vm_offset_t desc_pa = kvtophys((vm_offset_t)adma_desc);
-	if (buf_pa == 0 || desc_pa == 0) {
+	vm_offset_t raw_pa = kvtophys((vm_offset_t)adma_desc);
+	if (buf_pa == 0 || raw_pa == 0) {
 		return -1;
 	}
+	/* Align the descriptor table physically, not just virtually. */
+	vm_offset_t desc_pa = (raw_pa + 127u) & ~(vm_offset_t)127u;
+	uint8_t *desc = adma_desc + (desc_pa - raw_pa);
 	if (emmc_clear_command_line() != 0) {
 		return -1;
 	}
@@ -553,16 +564,23 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 	}
 	uint16_t cmd = (uint16_t)(ADMA2_TRAN_VALID | ADMA2_END);
 	uint16_t len = 512;
-	*(volatile uint16_t *)(adma_desc + 0) = cmd;
-	*(volatile uint16_t *)(adma_desc + 2) = len;
-	*(volatile uint32_t *)(adma_desc + 4) = (uint32_t)buf_pa;
-	*(volatile uint32_t *)(adma_desc + 8) = 0;
+	*(volatile uint16_t *)(desc + 0) = cmd;
+	*(volatile uint16_t *)(desc + 2) = len;
+	*(volatile uint32_t *)(desc + 4) = (uint32_t)buf_pa;
+	*(volatile uint32_t *)(desc + 8) = 0;
 	__asm__ volatile ("dsb sy" ::: "memory");
 
-	/* ADMA2 64-bit addressing: host control DMA select bits[4:3] = 0b11. */
-	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)((sdhci_read8(SDHCI_HOST_CONTROL) & 0x27u) | 0x18u));
+	/* 32-bit ADMA2: 8-byte descriptors and DMA select bits[4:3] = 0b10. The 64-bit variant made
+	 * the engine walk past our END bit (the address register advanced by 0x24), so try the
+	 * simpler encoding first - every address here fits in 32 bits. */
+	sdhci_write8(SDHCI_HOST_CONTROL, (uint8_t)((sdhci_read8(SDHCI_HOST_CONTROL) & 0x27u) | 0x10u));
 	/* 0x00 is the SDMA system address; the ADMA2 engine fetches its descriptor table from
 	 * 0x58/0x5c. Writing the pointer to 0x00 meant this transfer never had a valid table. */
+	/* The descriptor and the destination buffer were written through cached mappings; the data
+	 * engine reads physical memory, so without this it sees the zeros that were there before and
+	 * walks off the end of the table. */
+	flush_dcache64((addr64_t)desc_pa, 128, TRUE);
+	flush_dcache64((addr64_t)buf_pa, 512, TRUE);
 	sdhci_write32(SDHCI_ADMA_ADDRESS, (uint32_t)desc_pa);
 	sdhci_write32(SDHCI_ADMA_ADDRESS_HI, 0u);
 	sdhci_write16(SDHCI_BLOCK_SIZE, 512u);
@@ -613,6 +631,23 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 	if (sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000) <= 0) {
 		/* 0x54: bits[1:0] say whether the descriptor was rejected (01), the transfer failed on
 		 * the bus (10) or both (11). That separates a malformed table from an IOMMU/bus problem. */
+			ring_puts("EMMC adma2 hc=");
+		ring_hex(sdhci_read8(SDHCI_HOST_CONTROL), 2);
+		ring_puts(" xf=");
+		ring_hex(sdhci_read16(SDHCI_TRANSFER_MODE), 4);
+		ring_puts(" bs=");
+		ring_hex(sdhci_read16(SDHCI_BLOCK_SIZE), 4);
+		ring_puts(" adma=");
+		ring_hex(sdhci_read32(SDHCI_ADMA_ADDRESS), 8);
+		ring_puts(" raw=");
+		ring_hex((uint32_t)kvtophys((vm_offset_t)adma_desc), 8);
+		ring_puts(" desc=");
+		ring_hex((uint32_t)((kvtophys((vm_offset_t)adma_desc) + 127u) & ~(vm_offset_t)127u), 8);
+		ring_puts(" d0=");
+		ring_hex(*(volatile uint32_t *)(desc + 0), 8);
+		ring_puts(" d1=");
+		ring_hex(*(volatile uint32_t *)(desc + 4), 8);
+		ring_puts("\r\n");
 		ring_puts("EMMC adma2 adst=");
 		ring_hex(sdhci_read8(SDHCI_ADMA_ERROR_STATUS), 2);
 		ring_puts(" no TC int=");
@@ -623,6 +658,7 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 		return -1;
 	}
 	sdhci_write32(SDHCI_INT_STATUS, 0xffffffffu);
+	flush_dcache64((addr64_t)buf_pa, 512, TRUE);
 	for (unsigned i = 0; i < 512; i++) {
 		out[i] = sdma_buffer[i];
 	}
@@ -906,6 +942,13 @@ sirius_emmc_probe(void)
 	ring_puts("\r\n");
 
 	emmc_smmu_probe();
+	ring_puts("EMMC smmu140=");
+	ring_hex(emmc_smmu_report, 8);
+	ring_puts(" scr0=");
+	ring_hex(emmc_smmu_scr0, 8);
+	ring_puts(" gfsr=");
+	ring_hex(emmc_smmu_base != 0 ? *(volatile uint32_t *)(emmc_smmu_base + 0x048u) : 0u, 8);
+	ring_puts("\r\n");
 
 	/* The board wires vqmmc to a 1.8 V rail, so the card I/O is 1.8 V even though the controller
 	 * was left at 3.0 V. Commands survive that mismatch, multi-line data does not. */

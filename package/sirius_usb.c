@@ -1175,8 +1175,16 @@ sirius_usb_poll(void)
 static void
 ud_thread(void *arg __unused, wait_result_t wr __unused)
 {
+	unsigned ticks = 0;
 	for (;;) {
 		ud_poll();
+		/* Once a second, rewind the ring so a host that attaches long after boot still gets the
+		 * whole log. Without this the ring is handed over exactly once, inside the boot window,
+		 * and every capture that starts a moment later sees nothing. */
+		if (++ticks >= 500) {
+			ticks = 0;
+			ud.tx_pos = 0;
+		}
 		ud_sleep_ms(2);
 	}
 }

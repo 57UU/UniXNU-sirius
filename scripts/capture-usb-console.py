@@ -55,6 +55,10 @@ def main():
     parser.add_argument('--output', default='out/sirius-usb-console.log', help='log file (bytes appended)')
     parser.add_argument('--follow', action='store_true',
                         help='keep waiting for the port after EOF or re-enumeration')
+    parser.add_argument('--match', action='append', default=[],
+                        help='stop as soon as the captured bytes contain this text (repeatable)')
+    parser.add_argument('--match-window', type=float, default=4096.0,
+                        help='how many trailing bytes the --match patterns are tested against')
     args = parser.parse_args()
 
     port = args.port or wait_for_port(args.wait)
@@ -103,6 +107,7 @@ def main():
                 attrs[4] = attrs[5] = termios.B115200
                 termios.tcsetattr(fd, termios.TCSANOW, attrs)
                 next_poke = 0.0
+                tail = b''
                 try:
                     while end is None or time.time() < end:
                         # Any byte makes the driver replay its ring buffer, and the
@@ -124,6 +129,10 @@ def main():
                         total += len(chunk)
                         sys.stdout.write(chunk.decode('utf-8', 'replace'))
                         sys.stdout.flush()
+                        tail = (tail + chunk)[-int(args.match_window):] if args.match else b''
+                        if args.match and any(pat.encode() in tail for pat in args.match):
+                            print(f'matched, stopping after {total} bytes', file=sys.stderr)
+                            return 0
                 except OSError:
                     pass  # the device went away (reboot, re-enumeration)
                 finally:
