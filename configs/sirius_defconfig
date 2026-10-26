@@ -49,7 +49,7 @@ CONFIG_XNU_ARMVIRT_PLATFORM=n
 # entry probe's blue bar with no magenta bar.
 CONFIG_XNU_NATIVE_PAN=n
 CONFIG_XNU_SOURCE_MOCKFS=n
-CONFIG_XNU_TRUST_CACHE_RUNTIME=n
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=n
 
 # Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can

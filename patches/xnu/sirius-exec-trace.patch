@@ -1,0 +1,37 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 4308896..bf47271 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8072,7 +8072,9 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 	 */
+ 	size_t path_length = strlen(path) + 1;
+ 	argv0 = scratch_addr;
++	printf("sirius: init path copyout enter %s\n", path);
+ 	error = copyout(path, argv0, path_length);
++	printf("sirius: init path copyout %d\n", error);
+ 	if (error) {
+ 		return error;
+ 	}
+@@ -8096,6 +8098,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 		scratch_addr = USER_ADDR_ALIGN(scratch_addr + init_args_length, sizeof(user_addr_t));
+ 	}
+ 
++	printf("sirius: init argv enter\n");
+ 	if (proc_is64bit(p)) {
+ 		user64_addr_t argv64bit[3] = {};
+ 
+@@ -8133,9 +8136,13 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 	 * The access to the cred is safe:
+ 	 * the proc isn't running yet, it's stable.
+ 	 */
++	printf("sirius: init token enter\n");
+ 	set_security_token(p, proc_ucred_unsafe(p));
+ 
+-	return execve(p, &init_exec_args, retval);
++	printf("sirius: init execve enter\n");
++	error = execve(p, &init_exec_args, retval);
++	printf("sirius: init execve returned %d\n", error);
++	return error;
+ }
+ 
+ static const char * init_programs[] = {
