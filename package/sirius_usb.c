@@ -1521,18 +1521,12 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 	/* Give the host a moment to create the tty and let the capture attach: cdc_acm keeps no
 	 * backlog for a port that is not open yet, so a burst sent at configure time is lost. */
 	ud.tx_delay_ms = 3000;   /* milliseconds, counted by the inline loop below */
-	for (unsigned ms = 0; ms < 45000; ms++) {
+	for (unsigned ms = 0; ms < 120000; ms++) {
 		sirius_usb_busy_wait(1000);
 		if (ud.tx_delay_ms > 0) {
 			ud.tx_delay_ms--;
 		}
 		ud_poll();
-		/* Stop once the host has been given the whole pre-boot console mirror; until then the
-		 * pump is the only thing that can move bytes, because the poller thread is not scheduled
-		 * while bsd_init runs synchronously. */
-		if (ud.chars >= pur_ring.total && ud.chars != 0) {
-			break;
-		}
 	}
 	if (!ud.hold) {
 		thread_t thread;

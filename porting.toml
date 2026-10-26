@@ -166,7 +166,7 @@ evidence = [
 id = "storage"
 status = "planned"
 components = []
-paths = ["package/**", "docs/HANDOFF.zh-CN.md"]
+paths = ["docs/HANDOFF.zh-CN.md"]
 inputs = [
   "The reference unit is eMMC, not UFS: the UFS transport and its sheng integration points do not apply to this board.",
   "No native storage driver exists yet; the expected first stop of the kernel is the root device wait.",
@@ -179,6 +179,7 @@ procedure = [
 ]
 findings = [
   "The legacy port deliberately kept every UFS and owner-root flag off; the boot-progress interlock of UniXNU had to be relaxed for that reason.",
+  "The CDC console work lives in package/sirius_usb.c and does not change the storage blocker: the kernel still stops at the root device because no eMMC driver exists.",
 ]
 completion = [
   "The eMMC registers, GPT and the OS/SystemOS windows are correct, the root volume mounts and launchd starts.",
@@ -419,9 +420,9 @@ evidence = [
 id = "diagnostics"
 status = "implemented"
 components = []
-paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "docs/HANDOFF.zh-CN.md"]
+paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**"]
 inputs = [
-  "The panel and the serial console are the two evidence channels; there is no storage for logs yet.",
+  "The panel and the serial console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
 ]
 configuration = [
   "panic_screen = true patches the entry probe and the panic screen into the payload kernel.",
@@ -438,11 +439,12 @@ completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",
 ]
 limits = [
-  "No persistent log capture: the evidence lives in photographs of the panel and in the run's hashes.",
+  "The CDC console delivers the console ring as it stood when the host attached; making the whole boot stream live is the remaining work.",
 ]
 next_action = [
-  "Add the boot row and hash triple to every hardware result recorded here.",
+  "Add the boot row and hash triple to every hardware result recorded here, and attach the captured console log rather than a photograph whenever one exists.",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Entry probe, panic screen, panel rows and the evidence convention of the port." },
+  { kind = "device", reference = "docs/evidence/sirius-usb-console-20261026-1605.log", command = "sudo python3 scripts/capture-usb-console.py --wait 60 --duration 190 --output /tmp/boot.log", revision = "366abe2948fdb0c1554f7e0b89b731160f4527a4", result = "3813 bytes of kernel log read from /dev/ttyACM0 over the DWC3 CDC console." },
 ]
