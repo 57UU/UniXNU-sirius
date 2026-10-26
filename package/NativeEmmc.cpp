@@ -12,6 +12,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOPlatformExpert.h>
+#include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 
 extern "C" {
@@ -97,9 +98,11 @@ OSDefineMetaClassAndStructors(NativeEmmcBlock, IOBlockStorageDevice);
 bool
 NativeEmmcBlock::init(UInt64 blocks)
 {
+	IOLog("NativeEmmc: step 7b block base init\n");
 	if (!IOBlockStorageDevice::init(nullptr)) {
 		return false;
 	}
+	IOLog("NativeEmmc: step 7c block base init done\n");
 	fBlocks = blocks;
 	fLock = IOLockAlloc();
 	fBounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
@@ -112,10 +115,13 @@ NativeEmmcBlock::init(UInt64 blocks)
 bool
 NativeEmmcBlock::start(IOService *provider)
 {
+	IOLog("NativeEmmc: step 9a block base start\n");
 	if (!fLock || !fBounce || !IOBlockStorageDevice::start(provider)) {
 		return false;
 	}
+	IOLog("NativeEmmc: step 9b block register\n");
 	registerService();
+	IOLog("NativeEmmc: step 9c block registered\n");
 	return true;
 }
 
@@ -189,9 +195,11 @@ bool
 NativeEmmc::start(IOService *provider)
 {
 	fBlock = nullptr;
+	IOLog("NativeEmmc: step 4 base start\n");
 	if (!IOService::start(provider)) {
 		return false;
 	}
+	IOLog("NativeEmmc: step 5 prepare\n");
 	if (sirius_emmc_prepare() != 0) {
 		IOLog("NativeEmmc: the eMMC did not come up\n");
 		return false;
@@ -201,19 +209,24 @@ NativeEmmc::start(IOService *provider)
 		IOLog("NativeEmmc: no usable GPT on the device\n");
 		return false;
 	}
-
+	IOLog("NativeEmmc: step 6 allocate the block device\n");
 	fBlock = new NativeEmmcBlock;
+	IOLog("NativeEmmc: step 7 block %p\n", fBlock);
 	if (!fBlock || !fBlock->init(blocks)) {
 		IOLog("NativeEmmc: cannot allocate the block device\n");
 		return false;
 	}
+	IOLog("NativeEmmc: step 8 attach the block device\n");
 	fBlock->attach(this);
+	IOLog("NativeEmmc: step 9 start the block device\n");
 	if (!fBlock->start(this)) {
 		IOLog("NativeEmmc: the block device did not start\n");
 		return false;
 	}
 	IOLog("NativeEmmc: published %llu blocks of %u bytes\n", blocks, EMMC_BLOCK_SIZE);
+	IOLog("NativeEmmc: step 10 register the driver\n");
 	registerService();
+	IOLog("NativeEmmc: step 11 done\n");
 	return true;
 }
 
@@ -230,21 +243,30 @@ NativeEmmc::stop(IOService *provider)
 
 /* Entry point of bsd_init (patches/xnu/sirius-usb-console.patch). No personality is installed:
  * the board owns the controller, so the probe creates and starts the driver once, the way the
- * PMGR nub of this port is started. The eMMC probe above has already run by now, and
- * sirius_emmc_prepare() returns early, so the controller is not reset a second time. */
+ * PMGR nub of this port is started. It runs after the console starts, so the numbered steps are
+ * in the console ring even if the driver does not return. */
 extern "C" void
 sirius_native_emmc_probe(void)
 {
 	static NativeEmmc *device = nullptr;
+	unsigned enabled = 1;
+	if (PE_parse_boot_argn("sirius_emmc_drv", &enabled, sizeof(enabled)) && enabled == 0) {
+		IOLog("NativeEmmc: disabled by boot arg\n");
+		return;
+	}
 	if (device != nullptr) {
 		return;
 	}
+	IOLog("NativeEmmc: step 0 enter\n");
 	NativeEmmc *candidate = new NativeEmmc;
+	IOLog("NativeEmmc: step 1 instance %p\n", candidate);
 	if (candidate == nullptr || !candidate->init()) {
 		IOLog("NativeEmmc: allocation failed\n");
 		return;
 	}
+	IOLog("NativeEmmc: step 2 init done\n");
 	IOService *platform = IOService::getPlatform();
+	IOLog("NativeEmmc: step 3 platform %p\n", platform);
 	if (platform != nullptr && !candidate->attach(platform)) {
 		IOLog("NativeEmmc: attach to the platform failed\n");
 		candidate->release();
