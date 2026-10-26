@@ -1672,3 +1672,71 @@ UniXNU 的消费者是 `patches/xnu/offline-owner-*.patch` 这一组：
 
 已确认可用的地基：块设备（`device-verified`）、userdata 的 GPT GUID、
 窗口几何（`[userdata]` 里记录的 17301504..122142686 已被设备侧读回验证）。
+
+## eMMC 第十阶段：窗口发布撞上 IOStorageFamily 的对象生命周期（2026-10-27）
+
+### 先纠正第九阶段的判断
+
+`SHNGROOT` 既不是问题，也不需要 `offline-owner-*` 那组补丁。`scripts/unixnu/userdata.py`
+写得很清楚：清单的消费者是**块驱动自己**，窗口里是 IPSW 原样的 APFS 镜像。所有能挂根的设备
+记录都用同一个根卷 UUID `04769D26-2CA0-4825-B443-E2E5F88300F2`，通过
+`payload.adt.root_match_volume_uuid` 生成 `/chosen/root-matching`。
+
+### 实测：清单能读，窗口能发布，但内核会崩
+
+一次启动（`NEMMC` 直写环的日志）：
+
+```
+NEMMC manifest version 1
+NEMMC manifest windows 2
+NEMMC window name=OS
+NEMMC window lba 17303552          ← 17301504 + 0x100000/512，与 userdata.py 的布局一致
+NEMMC window blocks 11870275
+NEMMC window name=SystemOS
+NEMMC window lba 29175808
+NEMMC window blocks 6451200
+NEMMC windows prepared 2
+```
+
+但把窗口作为 `IOBlockStorageDevice` 发布出去之后，内核崩在 IOStorageFamily 里：
+
+| 变体 | 结果 |
+| --- | --- |
+| 内联在 `start()` 里发布 + 无 root-matching | panic @ `pc=0xfffffff0049758ac`（更早一次 `0xfffffff00496e5e0`） |
+| 移到内核线程按 SystemOS→OS 顺序发布 + root-matching | 不 panic，读到 104 个扇区，随后**心跳停止、串口 0 新字节** |
+
+两次 panic 是同一个签名，反汇编出来是：
+
+```
+ldr x8, [x20]        ; x20 非空
+ldr x8, [x8, #40]    ; x8 == 0 → far=0x28 → data abort
+mov x0, x20
+blr x8
+```
+
+即**对一个 vtable 指针已经被清零（已释放）的对象再 `release()`**——重复释放。
+
+### 上游实现为什么不会遇到
+
+`UniXNU/ShengUfs` 的 `NativeUfs.cpp` 里：
+
+- `ufsPrepareRootWindows` 先 `prepare`（`OSTypeAlloc` + `init` + `attach`）全部窗口，
+  全部成功才继续；失败走 `discard`，且注释明确：**"Started objects retain their owner
+  references even on a later failure"**——已启动的对象不释放。
+- `validate()` 要求 `NATIVE_VERIFIED_BLOCK` 且逐个窗口取**签名卷 UUID**，
+  没有验证就直接失败：`// Root publication requires owner verification in every build.`
+- 真正的发布在独立线程里，并且发布后**等待带期望 UUID 的 IOMedia 出现**（最多 30 s）。
+
+也就是说：**未经验证的窗口发布不是上游支持过的配置**。我们照做了同样的线程化与顺序，
+但仍然崩，说明这条路径本身与 IOStorageFamily 的对象生命周期不兼容。
+
+### 当前默认配置
+
+`sirius_emmc_win=1` 才能打开窗口发布，默认关闭；默认配置只发布整盘设备（已 device-verified），
+内核稳定停在等根设备。窗口代码保留，等验证链具备后再启用。
+
+### 顺带修掉的一个坑
+
+`emmc_log` 被 clang 内联后，**object 里丢失了大部分字面量字符串**（只剩 `emmc_log_hex`/
+`emmc_log_dec` 的标签），导致整轮启动日志里凡是纯文本行全都消失，误判成"静默挂起"。
+加 `__attribute__((noinline))` 后恢复。
