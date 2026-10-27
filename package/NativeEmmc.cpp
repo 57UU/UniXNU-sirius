@@ -142,6 +142,7 @@ volatile int sirius_env_kern_count;
 volatile unsigned long long sirius_fault_total;
 volatile int sirius_init_syscalls;         /* syscalls entered by pid 1 */
 volatile int sirius_init_syscall_returns;  /* ... and returned from */
+volatile int sirius_init_path_traces;      /* path traces printed for pid 1 */
 volatile int sirius_init_asts;             /* bsd_ast runs for pid 1 */
 volatile int sirius_user_thread_starts;    /* returns to user from a freshly made thread */
 thread_t sirius_launchd_thread;            /* the thread the init exec starts */

@@ -19,7 +19,7 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
  #define unix_syscall_kprintf(x...)      /* kprintf("unix_syscall: " x) */
  
  	if (kdebug_enable && !code_is_kdebug_trace(code)) {
-@@ -181,6 +192,15 @@
+@@ -181,6 +192,44 @@
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
  
@@ -29,6 +29,35 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
 +		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 24) {
 +			sirius_init_syscall_returns++;
 +			printf("sirius: init syscall %u return %d\n", (unsigned)code, error);
++		}
++		/*
++		 * sirius: which files the exec'd image asks for, and where it maps them. dyld stops
++		 * at the shared region right after the exec, so the path it opens (or fails to open)
++		 * is the fact that says whether the dyld shared cache is inside the mounted root at
++		 * all. open, openat, access, stat64, lstat, mmap and
++		 * shared_region_map_and_slide_2_np are the calls that carry a path or a file.
++		 */
++		if (proc != NULL && proc_pid(proc) == 1 &&
++		    (code == 5 || code == 463 || code == 33 || code == 338 || code == 188 ||
++		    code == 197 || code == 536)) {
++			extern volatile int sirius_init_path_traces;
++
++			if (sirius_init_path_traces < 48) {
++				user_addr_t arg = (code == 463) ? uthread->uu_arg[1] : uthread->uu_arg[0];
++				char path[96];
++				size_t len = 0;
++
++				sirius_init_path_traces++;
++				path[0] = 0;
++				if ((code == 5 || code == 463 || code == 33 || code == 338 || code == 188) &&
++				    copyinstr(CAST_USER_ADDR_T(arg), path, sizeof(path) - 1, &len) == 0) {
++					path[len < sizeof(path) ? len : sizeof(path) - 1] = 0;
++				}
++				printf("sirius: init call %u err %d rval %llx arg %llx %s\n",
++				    (unsigned)code, error,
++				    (unsigned long long)uthread->uu_rval[0],
++				    (unsigned long long)arg, path);
++			}
 +		}
 +	}
 +
