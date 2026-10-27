@@ -201,6 +201,7 @@ findings = [
   "With the original trust-cache bundle in the payload and the runtime initialised at startup, AMFI answers the exec policy itself: the boot prints execve activate 0 without the sirius-skip-cs bypass line, so the Apple-signed launchd is trusted rather than skipped into.",
   "The 25 MHz switch reads the GPT signature back at the new rate on device (the probe prints EMMC clock25=ok), so the RCG encoding above is confirmed rather than assumed.",
   "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
+  "The init exec returns 0 and then nothing asks the driver for another block: reads stop at 0x10D (269 requests, 0x98F blocks) while the heartbeat keeps counting, so the wait is past the storage stack. The caller side is now instrumented (sirius-post-exec-trace.patch): the exec thread-switch state, every new user thread start at thread_bootstrap_return, the first pid 1 syscalls with their returns, each bsd_ast for pid 1 and the first user faults after the exec, all written to the same USB ring and summarised by the heartbeat.",
 ]
 completion = [
   "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
@@ -214,7 +215,7 @@ limits = [
 next_action = [
   "Verify the 25 MHz switch (sirius_emmc_hs=1) reads the GPT signature back and measure the new block rate; then decide whether the CMD6 high-speed switch to 50 MHz is worth it.",
   "Keep the trust-cache bundle in step with the OS build when the IPSW changes (its sha256 is pinned in board.toml [payload] trust_cache_sha256).",
-  "Find what the kernel waits on after execve returns 0: the driver is idle there, so instrument the caller side rather than the transfer path.",
+  "Boot the post-exec-probe kernel and read the counters: two SIRIUS user thread start lines mean the exec'd thread was scheduled, and the last init syscall enter without a matching return names the call it never comes back from.",
   "Raise the SDCC1 clock out of identification speed (GCC root clock plus the card's high-speed mode).",
 ]
 evidence = [
@@ -476,6 +477,7 @@ findings = [
   "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",
   "The USB panel row names its fields after what they hold (step, txev, rxev, chars, echo, poll) instead of the register names they were first wired to, so a photograph can be read without the source.",
   "The CDC console hands the console ring to the host once per attach: the pump timing that works (a short inline poll loop that breaks after the ring is drained) delivered the 3813-byte boot log on every attempt, while longer loops and a DTR-gated pump delivered nothing, so that timing is treated as load-bearing until the periodic path runs during bsd_init.",
+  "The post-exec wait is instrumented on the kernel side rather than through the driver: sirius-post-exec-trace.patch prints the exec thread-switch flags, every user thread start (from thread_bootstrap_return, so one line means the exec'd thread never ran and two mean it did), the first pid 1 syscalls with their returns, every bsd_ast for pid 1 and the first user faults after the exec, and the eMMC heartbeat prints the counters so one capture answers the question.",
 ]
 completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",

@@ -1,0 +1,172 @@
+diff --git a/osfmk/arm64/locore.s b/osfmk/arm64/locore.s
+--- a/osfmk/arm64/locore.s
++++ b/osfmk/arm64/locore.s
+@@ -1283,6 +1283,9 @@
+ 	bl		EXT(__asan_handle_no_return)
+ 	POP_FRAME_WITHOUT_LR
+ #endif /* KASAN_TBI */
++	/* sirius: the first return to user of every user thread passes here, which is how the
++	 * probe counts thread starts without touching the scheduler (see NativeEmmc.cpp). */
++	bl		EXT(sirius_user_thread_probe)
+ 	b		EXT(arm64_thread_exception_return)
+ 
+ 	.text
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -687,6 +687,22 @@
+ 		    esr, VM_KERNEL_ADDRHIDE(far), VM_KERNEL_UNSLIDE(get_saved_state_pc(state)), 0, 0);
+ 	}
+ 
++	/*
++	 * sirius: after the init exec the only userland thread is the launchd image, so the first
++	 * user faults say whether it ran and which page it stopped on. The eMMC heartbeat reads the
++	 * counters back; nothing here touches storage.
++	 */
++	if (is_user) {
++		extern volatile int sirius_user_probe_armed;
++		extern volatile int sirius_user_faults;
++
++		if (sirius_user_probe_armed && sirius_user_faults < 8) {
++			sirius_user_faults++;
++			kprintf("sirius: user fault class %x esr %x far %p pc %p\n",
++			    (unsigned)class, esr, (void *)far, (void *)get_saved_state_pc(state));
++		}
++	}
++
+ 	if (__improbable(ESR_INSTR_IS_2BYTES(esr))) {
+ 		/*
+ 		 * We no longer support 32-bit, which means no 2-byte
+@@ -2398,3 +2414,31 @@
+ SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
+ 
+ #endif
++
++/*
++ * sirius: struct thread is only visible where MACH_KERNEL_PRIVATE is defined (the osfmk
++ * makefile adds it, the bsd one does not), so the board heartbeat asks here instead of reading
++ * the fields itself. Both values are snapshots: they are read without the thread lock and are
++ * only meant to tell a sleeping thread from a spinning one.
++ */
++unsigned int
++sirius_thread_state(thread_t thread)
++{
++	return (unsigned int)thread->state;
++}
++
++unsigned long long
++sirius_thread_wait_event(thread_t thread)
++{
++	return (unsigned long long)thread->wait_event;
++}
++
++/* The address the thread's next return to user will jump to, i.e. the entry point the exec
++ * installed. Zero before the thread has a user context. */
++unsigned long long
++sirius_thread_user_pc(thread_t thread)
++{
++	arm_saved_state_t *state = thread->machine.upcb;
++
++	return state == NULL ? 0 : (unsigned long long)get_saved_state_pc(state);
++}
+diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -102,6 +102,17 @@
+ 
+ 	code = arm_get_syscall_number(state);
+ 
++	/* sirius: pid 1 is the only userland process, so its first syscalls say how far the
++	 * launchd image gets after the exec returned, and which call it never comes back from. */
++	{
++		extern volatile int sirius_init_syscalls;
++
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscalls < 24) {
++			sirius_init_syscalls++;
++			printf("sirius: init syscall %u enter\n", (unsigned)code);
++		}
++	}
++
+ #define unix_syscall_kprintf(x...)      /* kprintf("unix_syscall: " x) */
+ 
+ 	if (kdebug_enable && !code_is_kdebug_trace(code)) {
+@@ -181,6 +192,15 @@
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
+ 
++	{
++		extern volatile int sirius_init_syscall_returns;
++
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 24) {
++			sirius_init_syscall_returns++;
++			printf("sirius: init syscall %u return %d\n", (unsigned)code, error);
++		}
++	}
++
+ #if CONFIG_MACF
+ skip_syscall:
+ #endif /* CONFIG_MACF */
+diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -3313,6 +3313,15 @@
+ 		return;
+ 	}
+ 
++	{
++		extern volatile int sirius_init_asts;
++
++		if (p->p_pid == 1 && sirius_init_asts < 8) {
++			sirius_init_asts++;
++			printf("sirius: bsd_ast pid 1 tid %lld\n", thread_tid(thread));
++		}
++	}
++
+ 	if (timerisset(&p->p_vtimer_user.it_value)) {
+ 		uint32_t        microsecs;
+ 
+@@ -3410,6 +3419,14 @@
+ 	if (!bsd_init_done) {
+ 		bsd_init_done = 1;
+ 		bsdinit_task();
++
++		/* The exec returned, so any user fault from here on belongs to the launchd image. */
++		{
++			extern volatile int sirius_user_probe_armed;
++
++			printf("sirius: init exec done, arming user fault probe\n");
++			sirius_user_probe_armed = 1;
++		}
+ 	}
+ }
+ 
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -4956,6 +4956,12 @@
+ 
+ 	/* Check if the current thread is not aborted due to SIGKILL */
+ 	thread_active = thread_is_active(old_thread);
++	/*
++	 * sirius: with any of these false the switch is skipped and the exec is swallowed, which
++	 * would leave the launchd thread never scheduled while execve still returns 0.
++	 */
++	printf("sirius: exec switch proc_active %d task_active %d thread_active %d\n",
++	    (int)proc_active, (int)task_active, (int)thread_active);
+ 
+ 	/*
+ 	 * Do not switch the proc if the new task or proc is already terminated
+@@ -5466,6 +5472,13 @@
+ 			if (!exec_done && error != 0) {
+ 				clearwait_flags |= TCRW_CLEAR_EXEC_COMPLETE;
+ 			}
++			/* sirius: keep the thread the exec starts so the heartbeat can report whether it
++			 * ever ran, and in which state it sits (see NativeEmmc.cpp). */
++			if (exec_done) {
++				extern thread_t sirius_launchd_thread;
++
++				sirius_launchd_thread = imgp->ip_new_thread;
++			}
+ 			/* wake up the new exec thread */
+ 			task_clear_return_wait(get_threadtask(imgp->ip_new_thread), clearwait_flags);
+ 			thread_deallocate(imgp->ip_new_thread);

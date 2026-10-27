@@ -115,6 +115,40 @@ static bool nemmc_panic_dumped;
 extern "C" char boot_progress_panic_text[2048];
 volatile uint32_t nemmc_heartbeats;
 
+/* Post-exec probes (patches/xnu/sirius-post-exec-trace.patch). The init exec returns 0 and then
+ * the stack asks for no block again, which cannot be told apart from "the launchd thread never
+ * started" without looking at the other side of the exec. The kernel writes these counters from
+ * the user-thread bootstrap, the pid 1 syscall path and the user fault path; the heartbeat below
+ * prints them, so one boot says whether the image ran, how far, and where it stopped. */
+extern "C" {
+volatile int sirius_user_probe_armed;      /* set once the init exec succeeded */
+volatile int sirius_user_faults;           /* user faults taken since then */
+volatile int sirius_init_syscalls;         /* syscalls entered by pid 1 */
+volatile int sirius_init_syscall_returns;  /* ... and returned from */
+volatile int sirius_init_asts;             /* bsd_ast runs for pid 1 */
+volatile int sirius_user_thread_starts;    /* returns to user from a freshly made thread */
+thread_t sirius_launchd_thread;            /* the thread the init exec starts */
+
+/* struct thread is private to the files compiled with MACH_KERNEL_PRIVATE, so the fields this
+ * driver wants are read by two small accessors in osfmk/arm64/sleh.c. */
+unsigned int sirius_thread_state(thread_t thread);
+unsigned long long sirius_thread_wait_event(thread_t thread);
+unsigned long long sirius_thread_user_pc(thread_t thread);
+
+/* Called from thread_bootstrap_return, i.e. once per new user thread, before its first return
+ * to user. Two lines mean the exec'd thread started; one means it never did. */
+void
+sirius_user_thread_probe(void)
+{
+	if (sirius_user_thread_starts < 8) {
+		sirius_user_thread_starts++;
+		emmc_log_hex("SIRIUS user thread start tid ", thread_tid(current_thread()));
+		emmc_log_hex("SIRIUS user thread start pc ",
+		    sirius_thread_user_pc(current_thread()));
+	}
+}
+}
+
 static void
 nemmc_heartbeat_thread(void *, wait_result_t)
 {
@@ -135,6 +169,17 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		emmc_log_hex("NEMMC alive beats/reads ",
 		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
 		emmc_log_hex("NEMMC alive blocks ", nemmc_blocks);
+		emmc_log_dec("NEMMC probe user thread starts ", sirius_user_thread_starts);
+		emmc_log_dec("NEMMC probe user faults ", sirius_user_faults);
+		emmc_log_dec("NEMMC probe init syscalls ", sirius_init_syscalls);
+		emmc_log_dec("NEMMC probe init returns ", sirius_init_syscall_returns);
+		emmc_log_dec("NEMMC probe init asts ", sirius_init_asts);
+		if (sirius_launchd_thread != nullptr) {
+			emmc_log_hex("NEMMC launchd thread ", (uint64_t)(uintptr_t)sirius_launchd_thread);
+			emmc_log_hex("NEMMC launchd state/wait ",
+			    ((uint64_t)sirius_thread_state(sirius_launchd_thread) << 40) |
+			    (sirius_thread_wait_event(sirius_launchd_thread) & 0xffffffffffULL));
+		}
 		uint64_t inflight = nemmc_inflight_lba;
 		if (inflight != 0 && nemmc_heartbeats - nemmc_inflight_beat > 1) {
 			emmc_log_hex("NEMMC inflight lba ", inflight);
