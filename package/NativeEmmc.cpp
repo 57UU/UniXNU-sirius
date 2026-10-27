@@ -15,6 +15,7 @@
 #include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
+#include <kern/thread_call.h>
 
 extern "C" {
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
@@ -178,6 +179,56 @@ nemmc_report_media_table(const char *stage)
 	emmc_log_dec("NEMMC media count ", index);
 }
 
+/* The completion is fired from a thread call, never inside doAsyncReadWrite. Running it in the
+ * caller's context re-enters IOStorageFamily while that stack still holds its own locks, which
+ * ends in "Taking non-sleepable RW lock with preemption enabled" (lock_rw.c:1400). The interface
+ * is asynchronous for exactly this reason, so the transfer and its completion both happen on the
+ * thread call and the caller returns at once. */
+struct NemmcRequest {
+	IOMemoryDescriptor *buffer;
+	UInt64 base;
+	UInt64 block;
+	UInt64 count;
+	IOStorageCompletion completion;
+};
+
+static thread_call_t nemmc_completion_call;
+
+static void
+nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
+{
+	/* XNU passes param0 from thread_call_allocate and param1 from thread_call_enter1,
+	 * so the request travels as param1. */
+	(void)param0;
+	NemmcRequest *request = (NemmcRequest *)param1;
+	IOReturn result = kIOReturnSuccess;
+	uint8_t *bounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
+	if (bounce == nullptr) {
+		result = kIOReturnNoMemory;
+	}
+	for (UInt64 i = 0; result == kIOReturnSuccess && i < request->count; i++) {
+		nemmc_transport_lock_acquire();
+		int read = sirius_emmc_read_block(request->base + request->block + i, bounce);
+		nemmc_transport_lock_release();
+		if (read != 0) {
+			emmc_log_hex("NEMMC transfer failed lba ", request->base + request->block + i);
+			result = kIOReturnIOError;
+			break;
+		}
+		if (bounce != nullptr &&
+		    request->buffer->writeBytes(i * EMMC_BLOCK_SIZE, bounce, EMMC_BLOCK_SIZE) !=
+		    EMMC_BLOCK_SIZE) {
+			result = kIOReturnIOError;
+		}
+	}
+	if (bounce != nullptr) {
+		IOFree(bounce, EMMC_BLOCK_SIZE);
+	}
+	request->completion.action(request->completion.target, request->completion.parameter, result,
+	    result == kIOReturnSuccess ? request->count * EMMC_BLOCK_SIZE : 0);
+	IOFree(request, sizeof(NemmcRequest));
+}
+
 class NativeEmmcBlock : public IOBlockStorageDevice
 {
 	OSDeclareDefaultStructors(NativeEmmcBlock);
@@ -322,27 +373,17 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		emmc_log_hex("NEMMC read block ", block);
 		emmc_log_hex("NEMMC read count ", count);
 	}
-	IOReturn result = kIOReturnSuccess;
-	nemmc_transport_lock_acquire();
-	for (UInt64 i = 0; i < count; i++) {
-		if (sirius_emmc_read_block(fBase + block + i, fBounce) != 0) {
-			emmc_log_hex("NEMMC transfer failed lba ", fBase + block + i);
-			emmc_log_dec("NEMMC transfer failed index ", i);
-			result = kIOReturnIOError;
-			break;
-		}
-		if (buffer->writeBytes(i * EMMC_BLOCK_SIZE, fBounce, EMMC_BLOCK_SIZE) !=
-		    EMMC_BLOCK_SIZE) {
-			result = kIOReturnIOError;
-			break;
-		}
+	NemmcRequest *request = (NemmcRequest *)IOMalloc(sizeof(NemmcRequest));
+	if (request == nullptr) {
+		return kIOReturnNoMemory;
 	}
-	nemmc_transport_lock_release();
-
-	/* The transfer is synchronous, so the completion fires before returning. */
-	completion->action(completion->target, completion->parameter, result,
-	    result == kIOReturnSuccess ? count * EMMC_BLOCK_SIZE : 0);
-	return result;
+	request->buffer = buffer;
+	request->base = fBase;
+	request->block = block;
+	request->count = count;
+	request->completion = *completion;
+	thread_call_enter1(nemmc_completion_call, request);
+	return kIOReturnSuccess;
 }
 
 class NativeEmmc : public IOService
@@ -608,6 +649,13 @@ sirius_native_emmc_probe(void)
 	}
 	if (device != nullptr) {
 		return;
+	}
+	if (nemmc_completion_call == nullptr) {
+		nemmc_completion_call = thread_call_allocate(nemmc_complete_request, nullptr);
+		if (nemmc_completion_call == nullptr) {
+			emmc_log("NativeEmmc: no completion call\n");
+			return;
+		}
 	}
 	emmc_log("NativeEmmc: step 0 enter\n");
 	NativeEmmc *candidate = new NativeEmmc;
