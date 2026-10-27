@@ -39,9 +39,19 @@ selected from the U-Boot boot menu.
 | Payload volume | working: p80 FAT with `\EFI\UniXNU\BOOTUNIXNU` |
 | XNU entry | working: green/blue/magenta entry-probe bands on hardware |
 | Platform expert | working: MMU on, 19.2 MHz timer, PSCI reset proven by the reset loop |
-| Console | working: boot-progress panel with the live kernel log, NVRAM proxy and memory map |
-| IOKit | **blocked**: `AppleARMCPU` from the kernelcache claims `/cpus` and panics in `_validateConfiguration()` (it requires `/cpus/max_cpus`); the native ArmCpu has not been seen winning the nubs |
-| Root device | pending: eMMC board, no storage driver yet — the expected first stop |
+| Console | working: boot-progress panel with the live kernel log, and a CDC-ACM USB console whose ring also carries the kernel's own `printf` output and any panic message |
+| IOKit | working: `sheng-smp=1` makes the native ArmCpu claim every `/cpus` nub and the board publishes the `ApplePMGRNub` AMFI looks for, so the prelinked kexts start |
+| Storage (eMMC) | working: SDCC1 at 400 kHz, SHNGROOT windows of `[userdata]` published as block devices, whole-disk media of 0x747BFDF sectors; IOStorageFamily parses the GPT through the driver |
+| Root filesystem | working: APFS mounts the OS volume (`disk2s1`), `bsd_init` completes and the sealed-root answer is recorded instead of panicking |
+| init / launchd | working: `execve` of `/sbin/launchd` completes (`execve activate 0`); the exec policy answer is recorded with `sirius-skip-cs=1` until the trust cache is supplied |
+| Userland | **next**: after the successful exec the kernel stops asking the driver for blocks, so the remaining wait is past storage; the eMMC clock also needs to leave 400 kHz |
+
+Where it stops now: `execve` returns 0 for launchd, the driver then sees no further
+requests, and nothing else is printed. The eMMC clock is still the identification
+rate (about 550 blocks/s), which is a speed problem rather than the cause of that
+wait. The proper fix for the exec policy is the original trust-cache bundle
+(`build-original-system-trust.py` + `build payload --trust-cache`), which also
+retires `sirius-skip-cs=1`.
 
 The full history, the solved problems and the road map are in `docs/HANDOFF.zh-CN.md`; the
 machine-checked version of the same facts is `porting.toml`.

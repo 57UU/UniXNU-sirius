@@ -192,22 +192,31 @@ findings = [
   "The prelink slides every component by a constant: extents[].va = original + slide for each segment and bindings[] carries new_site = site + slide, so the addresses the driver needs are the kernelcache's plus the slide.",
   "The dispatch table is identifiable without a live snapshot: of the 190 pinned slot names 176 are kernel exports, exactly one __DATA_CONST table matches all of them, the other 14 slots point at the kext's own BRK traps, the single constructor that stores table+16 forwards to the actual IOService constructor and the base destructor resolves to IOService's.",
   "Eleven imports are bound (dispatch table, metaclass, protected constructor, base destructor and seven methods); when the prelinked kernel exists the derivation also checks it holds the same constructor at the slid address, so a wrong slide cannot pass.",
+  "The SHNGROOT manifest at userdata LBA 17301504 describes two windows (OS 17303552+11870275, SystemOS 29175808+6451200); publishing them as their own IOBlockStorageDevice makes APFS mount disk0, disk1s1 and disk2s1 (the OS volume DawnUpdate21H461.J120J121J207J208OS) and bsd_init completes.",
+  "A thread_call has a single pending slot: thread_call_enter1 neither queues a second call nor preserves the first parameter, so passing requests there silently dropped completions and any caller waiting on such a request hung with the kernel otherwise idle. Requests now sit on a software queue that one drain services.",
+  "Completing a block request from another thread deadlocks this stack the same way the drop did (reads and blocks frozen at the same point, no error, the drain asleep), so doAsyncReadWrite completes inline by default.",
+  "The recurring 'Taking non-sleepable RW lock with preemption enabled' panic is the trust cache runtime lock, not a pmap lock: lock 0xfffffff007b3b548 resolves to _trust_cache_rt_lock and the first caller to _query_trust_cache+0x70. trust_cache_runtime_init() is not compiled into this build, so the lock word reads all zeros (lck_rw_can_sleep == false) and lck_rw_lock_shared panics at lock_rw.c:1400; the driver's heartbeat now mirrors the panic text into the USB ring, which is how the addresses were read.",
+  "With the runtime guarded to answer KERN_NOT_FOUND, AMFI refuses every image and the kernel kills launchd with namespace 9 (OS_REASON_EXEC) code 8 (EXEC_EXIT_REASON_SECURITY_POLICY); recording and clearing that answer with sirius-skip-cs=1 makes exec_activate_image return 0, so execve of /sbin/launchd completes.",
+  "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
 ]
 completion = [
-  "The eMMC registers, GPT and the OS/SystemOS windows are correct, the root volume mounts and launchd starts.",
+  "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
 ]
 limits = [
   "Read-only: the transfer path has no write command and reportWriteProtection() says so.",
-  "IOStorageFamily parses the partition table through the driver, but the OS/SystemOS windows are not published as their own media yet, so the boot still ends at the root-device wait.",
-  "The heartbeat thread keeps ticking with the transfer count fixed at seven, so the kernel is alive and idle there rather than stuck.",
-  "CMD7 still answers r1=00000000 while reads work, because the boot chain leaves the card selected.",
+  "After the successful execve of launchd the driver receives no further requests: the remaining wait is past the storage stack, not in it.",
+  "The card clock is still the identification rate (400 kHz, about 550 blocks/s measured); nothing raises it to high speed yet.",
+  "The exec policy answer still comes from a boot argument (sirius-skip-cs=1) because the board has no trust cache; the original trust-cache bundle is not wired into the payload yet.",
 ]
 next_action = [
-  "Publish the OS and SystemOS userdata windows as their own media with the window UUID of [userdata], so the root device the OS profile asks for exists.",
+  "Build the original trust-cache bundle (scripts/build-original-system-trust.py) and pass it with build payload --trust-cache, so AMFI trusts the OS binaries and sirius-skip-cs=1 can be dropped.",
+  "Find what the kernel waits on after execve returns 0: the driver is idle there, so instrument the caller side rather than the transfer path.",
+  "Raise the SDCC1 clock out of identification speed (GCC root clock plus the card's high-speed mode).",
 ]
 evidence = [
   { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-obs.img; fastboot reboot; capture-usb-console.py --duration 240", revision = "d867b1d6498dc4d0f4ae4e18060762dcae6c5847", result = "NativeEmmc starts from bsd_init, publishes 0x747BFDF blocks of 512 bytes, and IOStorageFamily reads block 0, block 1 and block 2 with 21 sectors (the 84 GPT entries) through doAsyncReadWrite; the heartbeat keeps ticking with the transfer count fixed at seven, so the boot ends at the root-device wait. Log in docs/HANDOFF.zh-CN.md." },
   { kind = "host", reference = "docs/HANDOFF.zh-CN.md", command = "./scripts/xnu-container.sh run bash -lc './unixnu build kernel --skip-setup -D ../sirius'", revision = "a47f0d6b4615c3cdebf92102400a1bc302eb6d73", result = "The kernel links with NativeEmmc in the image (kernel.macho sha256 372820eb1b2cd9ecee15d769d1296771d0c8141c2681626d54651a62473446b8); the GitHub macOS runner builds the same archive (kernel workflow run 40386710258)." },
+  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-if.img; fastboot reboot; capture-usb-console.py --duration 220", revision = "bb81242", result = "APFS mounts disk0/disk1s1/disk2s1, bsd_init completes, execve of /sbin/launchd prints activate enter, namei 0, 'exec policy answered 1, skipped by boot arg' and finally 'execve activate 0'; the driver then has no transfer in flight and the read count stops at 0x10D, so the remaining wait is past storage." },
   { kind = "source", reference = "package/sirius_emmc.c", result = "SDCC1 bring-up, the ADMA2 read path and the GPT parse." },
 ]
 
