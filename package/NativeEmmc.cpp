@@ -103,12 +103,28 @@ nemmc_transport_lock_release(void)
 }
 
 volatile uint32_t nemmc_reads;
+static bool nemmc_panic_dumped;
+
+extern "C" char boot_progress_panic_text[2048];
 volatile uint32_t nemmc_heartbeats;
 
 static void
 nemmc_heartbeat_thread(void *, wait_result_t)
 {
 	for (;;) {
+		/* The panic screen paints to the framebuffer and the banner then repaints over it, so a
+		 * panic message is gone before anyone can read it. The screen code already copies the
+		 * formatted message (with its return addresses) into this buffer, so mirror it into the
+		 * USB ring the moment it appears: the ring survives, the screen does not. */
+		if (!nemmc_panic_dumped && boot_progress_panic_text[0] != 0) {
+			nemmc_panic_dumped = true;
+			emmc_log("NEMMC PANIC TEXT BEGIN\n");
+			for (unsigned i = 0; i < sizeof(boot_progress_panic_text) &&
+			    boot_progress_panic_text[i] != 0; i++) {
+				sirius_usb_log_char(boot_progress_panic_text[i]);
+			}
+			emmc_log("\nNEMMC PANIC TEXT END\n");
+		}
 		emmc_log_hex("NEMMC alive beats/reads ",
 		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
 		nemmc_heartbeats++;
