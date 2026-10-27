@@ -56,13 +56,16 @@ ABL (boot 分区 = 我们重编的 U-Boot boot.img)
 
 ### 3.1 U-Boot（`boot-unixnu.img`，只在改 U-Boot 或它的启动逻辑时需要）
 
+环境文件与本说明已版本化在 [`uboot/`](uboot/README.md)（`uboot/unixnu-sirius.env`），
+可以只凭本仓库 + `sirius-distro` 复现这个镜像。
+
 U-Boot 本身**没有改源码**：用的是 `sirius-distro` 的原版 U-Boot（qcom_defconfig +
 qcom-phone + sirius 配置，带 EFI_LOADER/GOP）。UniXNU 的引导逻辑完全写在一个**默认环境文本文件**里，
 由 `sirius-build.sh` 通过 `CONFIG_ENV_DEFAULT_ENV_TEXT_FILE` 编进镜像：
 
 ```bash
 cd ~/Projects/sirius-distro
-ENV_FILE=~/Projects/Xnu4Sirius-legacy/unixnu-sirius.env ./uboot/sirius-build.sh
+ENV_FILE=$PWD/../sirius/uboot/unixnu-sirius.env ./uboot/sirius-build.sh
 # 产物 boot.img（U-Boot 镜像），另存为 boot-unixnu.img：
 #   cp boot.img ~/Projects/Xnu4Sirius-legacy/boot-unixnu.img
 fastboot flash boot ~/Projects/Xnu4Sirius-legacy/boot-unixnu.img
