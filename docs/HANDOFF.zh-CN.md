@@ -1949,3 +1949,43 @@ unexpected SIGKILL of launchd, reason -- namespace 9, code 8
    自锁）。对策：传输前先 `buffer->prepare()` 或 `map()` 强制驻留，或在 worker 里先 copy 到自备缓冲再写。
 3. **eMMC 时钟**：仍是 400 kHz（`EMMC clock=0007`），每块数十毫秒。userland 要可用必须升到
    25/50 MHz（GCC SDCC1 RCG + CMD6 high-speed）。
+
+## 第十五阶段：execve 成功（2026-10-27）
+
+`sirius-skip-cs=1` 生效后，init 的 exec 真正完成：
+
+```
+sirius: execve activate enter
+sirius: execve namei 0
+sirius: exec policy answered 1, skipped by boot arg
+sirius: execve activate 0
+```
+
+- `ip_mac_return = 1` 来自 AMFI 的 exec 钩子（没有信任链，所以一律拒绝），
+  boot arg 把它记录并清零，`exec_activate_image` 返回 0。
+- 之前那条 `unexpected SIGKILL of launchd ... namespace 9 code 8`
+  （`OS_REASON_EXEC` / `EXEC_EXIT_REASON_SECURITY_POLICY`）就是同一处拒绝。
+
+### 之后的停顿不在存储
+
+新加的 in-flight 探测（心跳打印在途传输的 LBA/长度）显示停顿时**驱动没有任何传输在途**，
+且读请求计数不再增长。也就是说 `execve` 返回后，内核没有再从磁盘读任何东西，
+剩下的停留在 launchd/用户态一侧（或 `bsd_init` 之后的步骤）。
+
+### 传输吞吐实测
+
+`blocks` 计数：从 0x3fc 到 0x84a 用 2 秒 → 约 550 块/秒（约 280 KB/s），
+与 400 kHz、4 位总线的理论上限一致。所以 400 kHz 是"慢"，但**不是**这几处停顿的原因。
+
+### IPSW 与信任链
+
+正确路径需要 IPSW：`iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw`（6.36 GB）已开始下载到
+`~/Projects/Xnu4Sirius/`。下载完成后：
+
+1. 软链到 `UniXNU/refer/`（`build-original-system-trust.py` 从这里读）
+2. `unixnu ipsw fetch StaticTrustCache Cryptex1,SystemTrustCache -D ../sirius`
+3. `python3 UniXNU/scripts/build-original-system-trust.py` → `build/original-static-system-trust/original-static-system.bundle`
+4. 把 bundle 的 sha256 加进 `board.toml [payload] trust_cache_sha256`
+5. `unixnu build payload --trust-cache <bundle>`，并去掉 `sirius-skip-cs=1`
+
+这样 AMFI 的答案会是"信任"而不是"记录后跳过"。
