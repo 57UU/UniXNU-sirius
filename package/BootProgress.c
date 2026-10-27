@@ -93,7 +93,9 @@ static struct bp_pulse pulse;
 struct bp_panic_info boot_progress_panic_vinfo;
 // The panic screen (scripts/xnu-panic-screen.c) also copies the formatted panic message here (first panic only, NUL-terminated):
 // a panic on a secondary core parks just that core, the next swap paints over the panic screen, and the live banner keeps the text.
-char boot_progress_panic_text[256];
+/* 2048 bytes: the panic screen paints the message and then the frames (up to 24 return addresses),
+ * and the renderer was already copying that much out of a 256-byte object. */
+char boot_progress_panic_text[2048];
 _Static_assert(offsetof(struct bp_panic_info,height)==offsetof(struct vc_info,v_height),"panic height ABI");
 _Static_assert(offsetof(struct bp_panic_info,width)==offsetof(struct vc_info,v_width),"panic width ABI");
 _Static_assert(offsetof(struct bp_panic_info,depth)==offsetof(struct vc_info,v_depth),"panic depth ABI");
@@ -1044,7 +1046,7 @@ static void crash_banner(unsigned now) {
   uint64_t gpu_sig=0;
   for(unsigned i=4;i<8;++i)for(unsigned k=0;k<47;++k)gpu_sig=gpu_sig*131ULL+(unsigned char)boot_progress_ext[i][k];
   for(unsigned i=0;i<2;++i)for(unsigned k=0;k<111;++k)gpu_sig=gpu_sig*131ULL+(unsigned char)boot_progress_ext_wide[i][k];
-  for(unsigned k=0;k<255;++k)gpu_sig=gpu_sig*131ULL+(unsigned char)boot_progress_panic_text[k];
+  for(unsigned k=0;k<sizeof(boot_progress_panic_text)-1;++k)gpu_sig=gpu_sig*131ULL+(unsigned char)boot_progress_panic_text[k];
   uint64_t swaps=(&native_legacy_swap_validation_calls?native_legacy_swap_validation_calls:0)*31ULL+(&native_gop_gpu_offers?native_gop_gpu_offers+native_gop_gpu_completions*3:0);
   uint64_t signature=(&native_legacy_copy_n?native_legacy_copy_n:0)*1000003ULL+swaps*1009ULL+(now/10)*977ULL+(&native_wi_count?native_wi_count:0)*7919ULL+exit_records.crashes*131ULL+exit_records.failed+gpu_sig*17ULL;
   if(signature==banner_signature)return;
@@ -1160,7 +1162,7 @@ static void crash_banner(unsigned now) {
   // A panic that drew the panic screen and was then painted over: its message, wrapped over up to three rows.
   for(unsigned part=0;part<3 && boot_progress_panic_text[part*108] && n<48;++part) {
     char piece[109];unsigned k=0;
-    for(;k<108 && part*108+k<255 && boot_progress_panic_text[part*108+k];++k){char ch=boot_progress_panic_text[part*108+k];piece[k]=(ch>=32&&ch<127)?ch:' ';}
+    for(;k<108 && part*108+k<sizeof(boot_progress_panic_text)-1 && boot_progress_panic_text[part*108+k];++k){char ch=boot_progress_panic_text[part*108+k];piece[k]=(ch>=32&&ch<127)?ch:' ';}
     piece[k]=0;
     snprintf(rows[n++],120,"%s%s",part?"      ":"PANIC ",piece);
   }

@@ -1,0 +1,33 @@
+diff --git a/bsd/kern/kern_fork.c b/bsd/kern/kern_fork.c
+index 5201d84..260ee40 100644
+--- a/bsd/kern/kern_fork.c
++++ b/bsd/kern/kern_fork.c
+@@ -685,10 +685,13 @@ cloneproc(task_t parent_task, coalition_t *parent_coalitions, proc_t parent_proc
+ 	bool cloning_initproc = !!(clone_flags & CLONEPROC_INITPROC);
+ 	bool in_exec = !!(clone_flags & CLONEPROC_EXEC);
+ 
++	printf("sirius: cloneproc forkproc enter\n");
+ 	if ((child_proc = forkproc(parent_proc, clone_flags)) == NULL) {
+ 		/* Failed to allocate new process */
++		printf("sirius: cloneproc forkproc failed\n");
+ 		goto bad;
+ 	}
++	printf("sirius: cloneproc forkproc done\n");
+ 
+ 	/*
+ 	 * In the case where the parent_task is TASK_NULL (during the init path)
+@@ -703,12 +706,14 @@ cloneproc(task_t parent_task, coalition_t *parent_coalitions, proc_t parent_proc
+ 	const int parent_64bit_addr = parent_proc->p_flag & P_LP64;
+ 	const int parent_64bit_data = (parent_task == TASK_NULL) ? parent_64bit_addr : task_get_64bit_data(parent_task);
+ 
++	printf("sirius: cloneproc create_child enter\n");
+ 	child_thread = fork_create_child(parent_task,
+ 	    parent_coalitions,
+ 	    child_proc,
+ 	    parent_64bit_addr,
+ 	    parent_64bit_data,
+ 	    clone_flags);
++	printf("sirius: cloneproc create_child %p\n", child_thread);
+ 
+ 	if (child_thread == NULL) {
+ 		/*

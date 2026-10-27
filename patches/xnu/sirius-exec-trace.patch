@@ -1,8 +1,8 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 8bba078..f8ade9c 100644
+index 3578bcd..910ae2a 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -2244,7 +2244,9 @@ exec_activate_image(struct image_params *imgp)
+@@ -2247,7 +2247,9 @@ exec_activate_image(struct image_params *imgp)
  	    UIO_SYSSPACE, CAST_USER_ADDR_T(excpath), imgp->ip_vfs_context);
  
  again:
@@ -12,7 +12,7 @@ index 8bba078..f8ade9c 100644
  	if (error) {
  		if (error == ERESTART) {
  			error = EINTR;
-@@ -5211,7 +5213,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+@@ -5214,7 +5216,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
  
  #if CONFIG_MACF
  	if (uap->mac_p != USER_ADDR_NULL) {
@@ -22,7 +22,7 @@ index 8bba078..f8ade9c 100644
  		if (error) {
  			goto exit_with_error;
  		}
-@@ -5230,7 +5234,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+@@ -5233,7 +5237,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
  		 * the old proc in pid hash and other lists that make
  		 * the proc visible to the system.
  		 */
@@ -32,7 +32,7 @@ index 8bba078..f8ade9c 100644
  		/* task and thread ref returned by cloneproc */
  		if (imgp->ip_new_thread == NULL) {
  			(void)chgproccnt(kauth_getruid(), -1);
-@@ -5248,8 +5254,10 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+@@ -5251,8 +5257,10 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
  
  	imgp->ip_subsystem_root_path = p->p_subsystem_root_path;
  
@@ -43,7 +43,7 @@ index 8bba078..f8ade9c 100644
  
  
  	/*
-@@ -5257,7 +5265,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+@@ -5260,7 +5268,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
  	 * Warning: If activation failed after point of no return, it returns error
  	 * as 0 and pretends the call succeeded.
  	 */
@@ -53,3 +53,36 @@ index 8bba078..f8ade9c 100644
  	/* thread and task ref returned for vfexec case */
  
  	if (imgp->ip_new_thread != NULL) {
+@@ -8066,7 +8076,9 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 	 */
+ 	size_t path_length = strlen(path) + 1;
+ 	argv0 = scratch_addr;
++	printf("sirius: init path copyout enter %s\n", path);
+ 	error = copyout(path, argv0, path_length);
++	printf("sirius: init path copyout %d\n", error);
+ 	if (error) {
+ 		return error;
+ 	}
+@@ -8090,6 +8102,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 		scratch_addr = USER_ADDR_ALIGN(scratch_addr + init_args_length, sizeof(user_addr_t));
+ 	}
+ 
++	printf("sirius: init argv enter\n");
+ 	if (proc_is64bit(p)) {
+ 		user64_addr_t argv64bit[3] = {};
+ 
+@@ -8127,9 +8140,13 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+ 	 * The access to the cred is safe:
+ 	 * the proc isn't running yet, it's stable.
+ 	 */
++	printf("sirius: init token enter\n");
+ 	set_security_token(p, proc_ucred_unsafe(p));
+ 
+-	return execve(p, &init_exec_args, retval);
++	printf("sirius: init execve enter\n");
++	error = execve(p, &init_exec_args, retval);
++	printf("sirius: init execve returned %d\n", error);
++	return error;
+ }
+ 
+ static const char * init_programs[] = {
