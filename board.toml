@@ -112,6 +112,10 @@ kernel_args = [
   "sirius_emmc_hs=1",              # 25 MHz card clock instead of the 400 kHz identification rate
   "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
   "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
+  "ignition_level=1",               # dyld's libignition: skip the preboot/cryptex stages and read
+                                    # /System/Library/Caches/com.apple.dyld on the system volume
+                                    # (the ios-sweet reference; without it level 5 mounts preboot)
+  "launchd_unsecure_cache=1",       # launchd accepts its job cache without AMFI (ios-sweet's value)
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
   "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
                                     # patches/xnu/sirius-skip-rootauth.patch
