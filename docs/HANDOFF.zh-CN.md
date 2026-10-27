@@ -1791,3 +1791,55 @@ Windows 让 APFS 同时挂多个卷并发读，而 `sirius_emmc.c` 的 staging b
 
 下一步：用 DEVELOPMENT 的 `launchdsuffix=release` 让它直接 exec `/sbin/launchd`，
 失败时内核会 panic 出 errno；成功则直接进 userland。
+
+## eMMC 第十二阶段：init 的 exec 前置步骤与一个新的锁 panic（2026-10-27）
+
+### 已确认走通的部分
+
+一次启动的完整证据链（内核消息来自 `sirius-console-ring.patch` 的镜像）：
+
+```
+AMFI: Enabling developer mode since protected data is not available
+apfs_log_op_with_proc: disk0  mounting volume ...
+apfs_log_op_with_proc: disk2s1 mounting volume DawnUpdate21H461.J120J121J207J208OS
+apfs_log_op_with_proc: disk2s1 mount-complete ...
+load_init_program: attempting to load /sbin/launchd
+```
+
+- 块设备、SHNGROOT 窗口、APFS 三个卷（`disk0`/`disk1s1`/`disk2s1`）都正常；
+- `sirius-skip-rootauth=1` 越过 sealed-root 检查后，`bsd_init` 完整跑完（`bsd_init: done?`）；
+- `init` 进入 `load_init_program`，并尝试 exec `/sbin/launchd`。
+
+### 没有进去的地方
+
+`load_init_program_at_path` 里加了编号打印（`sirius-exec-trace.patch`）：
+
+```
+sirius: init path copyout enter <path>
+sirius: init path copyout <err>
+sirius: init argv enter
+sirius: init token enter
+sirius: init execve enter
+sirius: init execve returned <err>
+```
+
+而 `__mac_execve` 里的 `sirius: execve cloneproc enter` 从未出现，说明 **`execve()` 没有被调用**：
+阻塞在它之前（`copyout` 或 `set_security_token`）。
+
+### 新的阻塞：非睡眠 rw 锁 + 抢占
+
+屏幕上是：
+
+```
+Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1400
+```
+
+这条在**换成原子自旋之后**仍然出现，所以不是 `IOLock` 造成的（那是更早一次的原因）。
+`lock_rw.c:1400` 的判据是：锁不可睡眠且 `get_preemption_level() == 0`。
+需要 panic 之后的**回溯（backtrace）**才能定位调用者。
+
+### 传输层
+
+`sirius_emmc.c` 的 staging buffer / ADMA 描述符表是全局唯一的，多个 `IOBlockStorageDevice`
+并发读会互相踩。现在用**原子标志 + IODelay** 单飞（不能用 IOLock：读路径可能在不可睡上下文，
+用 IOLock 会触发上面那条 panic 的另一个来源）。
