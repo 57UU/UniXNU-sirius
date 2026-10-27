@@ -24,9 +24,12 @@ import time
 def fastboot(*args: str, timeout: int = 30) -> str:
     """Run fastboot and return its stdout, or "" when it fails."""
     try:
+        # fastboot writes its report to stderr, so both streams are kept: parsing
+        # only stdout read every getvar as an empty answer.
         done = subprocess.run(
             ["fastboot", *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             timeout=timeout,
         )
