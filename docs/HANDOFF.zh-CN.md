@@ -137,7 +137,8 @@ build -p DarwinBootPkg/DarwinBoot.dsc -a AARCH64 -b DEBUG -t CLANGPDB -n 32
 ```bash
 cd ~/Xnu4Sirius/work/UniXNU
 UNIXNU_UEFI=$HOME/Xnu4Sirius/work/uefi-sheng \
-./unixnu build payload --kernel ~/Xnu4Sirius/kernel-artifact/kernel-<name>.macho
+./unixnu build payload --kernel ~/Xnu4Sirius/kernel-artifact/kernel-<name>.macho \
+  --trust-cache build/original-static-system-trust/original-static-system.bundle
 python3 ~/Xnu4Sirius/UniXNU-sirius/scripts/make-uboot-payload.py \
   --payload out/sirius/payload/payload.img \
   --unixnu-efi out/sirius/package/Build/Out/AARCH64-DEBUG/UniXNU.efi \
@@ -146,6 +147,9 @@ python3 ~/Xnu4Sirius/UniXNU-sirius/scripts/make-uboot-payload.py \
 ```
 
 - `--marker` 写入 BOOTUNIXNU（自动启动 UniXNU；去掉则开机默认 Linux）。
+- ⚠️ `--trust-cache` **不能忘**：漏掉时 payload 里没有 `kernel.macho.trustcache`，内核日志会打
+  `no external trust caches found (segment length is zero)`，AMFI 于是用 namespace 9 / code 8
+  杀掉 launchd（panic 屏显示 `unexpected SIGKILL of launchd`）。忘了就重刷，不是内核回归。
 - `UNIXNU_UEFI` 提供 panic-screen 探针需要的 Font.h（uefi-sheng 检出）。
 - `unixnu build payload` 会重装 `out/sirius/tree`（脚本从设备仓覆盖主仓）；payload patch 会打印 `panic screen: ...`，并会做指令级校验，偏移不符会直接拒绝。
 
