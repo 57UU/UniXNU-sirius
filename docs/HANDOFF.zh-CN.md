@@ -1843,3 +1843,38 @@ Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1400
 `sirius_emmc.c` 的 staging buffer / ADMA 描述符表是全局唯一的，多个 `IOBlockStorageDevice`
 并发读会互相踩。现在用**原子标志 + IODelay** 单飞（不能用 IOLock：读路径可能在不可睡上下文，
 用 IOLock 会触发上面那条 panic 的另一个来源）。
+
+## eMMC 第十三阶段：execve 内部的锁 panic（2026-10-27）
+
+### 已经确认的进度
+
+`load_init_program_at_path` 的编号打印全部通过：
+
+```
+sirius: init path copyout enter /sbin/launchd
+sirius: init path copyout 0
+sirius: init argv enter
+sirius: init token enter
+sirius: init execve enter          ← 进入 execve
+```
+
+随后 panic：`Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1400`。
+
+即：`copyout`、`argv`、`set_security_token` 都没问题，**问题在 `execve()` 内部**。
+
+### 这一阶段做的两件事
+
+1. **异步完成**：`doAsyncReadWrite` 不再在调用者上下文里 `completion->action()`，
+   改为 `thread_call_enter1` 把传输与完成放到线程回调里（`IOBlockStorageDevice` 本
+   来就是异步接口，同步完成会在 IOStorageFamily 持锁时重入）。
+   期间修掉一个自己的 bug：XNU 的 `thread_call_allocate(func, param0)` 的 param0 在分配时
+   给定，`thread_call_enter1(call, param1)` 传的是 **param1**；按 param0 读会空指针
+   （`far=0x18`，`pc` 落在我们驱动内）。
+2. **锁 panic 带调用者地址**：`lock_rw.c` 里同一句 panic 有 **5 处**，先只改了一处，
+   所以屏幕文字没变。现在 5 处都打印 `lock %p caller %p %p %p`。
+
+### 下一步
+
+启动一次，把屏幕上 `caller 0x...` 那些地址记下来（或拍屏），用未剥离内核
+（`tree/build/xnu/ios-obj/.../mach.development.bcm2837.unstripped.noctf`）反查符号，
+就能定位是谁在抢占计数为 0 的上下文里取了不可睡眠的 rw 锁。
