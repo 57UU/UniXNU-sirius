@@ -81,9 +81,14 @@ def main() -> int:
 
     deadline = time.monotonic() + args.timeout
     last = ""
+    polls = 0
     while time.monotonic() < deadline:
         state = device_state()
-        if state != last:
+        polls += 1
+        # A gadget that is still initialising answers neither query; report the state
+        # when it changes and once a minute otherwise, so a silent run is not mistaken
+        # for a stuck one.
+        if state != last or polls % 6 == 0:
             print(f"device: {state}", flush=True)
             last = state
         kind, _, serial = state.partition(":")

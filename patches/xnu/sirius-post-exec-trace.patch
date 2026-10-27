@@ -19,7 +19,7 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
  #define unix_syscall_kprintf(x...)      /* kprintf("unix_syscall: " x) */
  
  	if (kdebug_enable && !code_is_kdebug_trace(code)) {
-@@ -181,6 +192,44 @@
+@@ -181,6 +192,73 @@
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
  
@@ -57,6 +57,35 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
 +				    (unsigned)code, error,
 +				    (unsigned long long)uthread->uu_rval[0],
 +				    (unsigned long long)arg, path);
++			}
++		}
++		/*
++		 * sirius: what launchd tells the console. After the shared region failure it only
++		 * writes, and that text is the message the image itself prints, so it says which
++		 * part of dyld gave up without guessing from the kernel side.
++		 */
++		if (proc != NULL && proc_pid(proc) == 1 && code == 4 && error == 0) {
++			extern volatile int sirius_init_write_traces;
++
++			if (sirius_init_write_traces < 24) {
++				char text[160];
++				size_t len = (size_t)uthread->uu_arg[2];
++
++				sirius_init_write_traces++;
++				if (len > sizeof(text) - 1) {
++					len = sizeof(text) - 1;
++				}
++				if (copyin(CAST_USER_ADDR_T(uthread->uu_arg[1]), text, len) == 0) {
++					for (size_t i = 0; i < len; i++) {
++						if (text[i] == '\n') {
++							text[i] = ' ';
++						} else if (text[i] < 0x20 || text[i] > 0x7e) {
++							text[i] = '.';
++						}
++					}
++					text[len] = 0;
++					printf("sirius: init write %s\n", text);
++				}
 +			}
 +		}
 +	}
@@ -143,6 +172,22 @@ diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
  	}
  }
  
+diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -2137,6 +2137,12 @@
+ 				    (void *)VM_KERNEL_ADDRPERM(current_thread()),
+ 				    proc_getpid(p), p->p_comm,
+ 				    (uint64_t)uap->start_address));
++				/* sirius: the task owns a shared region and the start-address
++				 * query failed, which vm_shared_region_start_address only does when
++				 * sr_first_mapping is -1: the region exists but carries no mapping.
++				 * That is the state dyld finds before it maps the shared cache. */
++				printf("sirius: sr exists %p kr %d\n",
++				    (void *)VM_KERNEL_ADDRPERM(shared_region), (int)kr);
+ 				error = ENOMEM;
+ 			} else {
+ #if __has_feature(ptrauth_calls)
 diff --git a/osfmk/arm64/locore.s b/osfmk/arm64/locore.s
 --- a/osfmk/arm64/locore.s
 +++ b/osfmk/arm64/locore.s
