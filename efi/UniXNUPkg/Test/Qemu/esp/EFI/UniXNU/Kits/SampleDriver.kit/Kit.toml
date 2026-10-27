@@ -1,0 +1,17 @@
+# Kit manifest: the smoke-test driver plus a DT overlay.
+schema = 1
+
+[kit]
+name = "SampleDriver"
+version = "1.0.0"
+description = "Injection self-test: installs UNIXNU_SAMPLE_PROTOCOL and adds /unixnu-overlay."
+
+[match]
+arch = "AARCH64"
+
+[[driver]]
+file = "SampleDriver.efi"
+args = "from-kit"
+
+[[overlay]]
+file = "overlay.dtbo"

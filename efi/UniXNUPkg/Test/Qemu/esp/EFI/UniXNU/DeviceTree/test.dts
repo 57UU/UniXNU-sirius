@@ -1,0 +1,16 @@
+// Minimal tree the smoke test patches; not a description of real hardware.
+/dts-v1/;
+
+/ {
+	compatible = "unixnu,smoke-test";
+	model = "UniXNU smoke-test tree";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	chosen {
+	};
+
+	unixnu-test {
+		marker = "original";
+	};
+};

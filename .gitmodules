@@ -1,0 +1,5 @@
+[submodule "uboot/src"]
+	path = uboot/src
+	url = https://github.com/57UU/u-boot.git
+	branch = sirius/v2.0
+	shallow = true

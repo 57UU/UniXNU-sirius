@@ -1,0 +1,30 @@
+## @file
+#  Test driver for UniXNU injection: installs UNIXNU_SAMPLE_PROTOCOL.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010019
+  BASE_NAME      = SampleDriver
+  FILE_GUID      = E11737A2-C846-41C1-850A-594DB97C34C9
+  MODULE_TYPE    = UEFI_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = SampleDriverEntry
+
+[Sources]
+  SampleDriver.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/Test/UniXNUTest.dec
+
+[LibraryClasses]
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gUniXNUSampleProtocolGuid   ## PRODUCES
+  gEfiLoadedImageProtocolGuid    ## CONSUMES

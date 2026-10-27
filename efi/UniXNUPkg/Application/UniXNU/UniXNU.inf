@@ -1,0 +1,31 @@
+## @file
+#  UniXNU as a UEFI application (UniXNU.efi): runs on any standard
+#  UEFI implementation for the target architecture.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010019
+  BASE_NAME      = UniXNU
+  FILE_GUID      = 9B665204-A133-47A2-9396-9E2B370A4E25
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = UniXNUApplicationEntry
+
+[Sources]
+  UniXNU.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  UniXNULib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+
+[Protocols]
+  gEfiLoadedImageProtocolGuid   ## CONSUMES

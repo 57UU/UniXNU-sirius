@@ -1,0 +1,19 @@
+# Smoke scenario 4: this volume sits at the start of a GPT partition named
+# "userdata"; everything after the first 64 MiB is published as a separate
+# block device and checked by the payload.
+version = 1
+
+[boot]
+timeout = 1
+default = "hello"
+
+[[block_slice]]
+partition = "userdata"
+name = "passthrough"
+offset = 67_108_864        # 64 MiB, where the FAT volume ends
+
+[[entry]]
+id = "hello"
+title = "Hello payload (block slice)"
+path = "Payloads/HelloPayload.efi"
+args = "expect slice shutdown"

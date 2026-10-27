@@ -66,6 +66,8 @@ machine-checked version of the same facts is `porting.toml`.
 | `configs/sirius_defconfig` | kernel configuration of the first-console image |
 | `package/` | board services built into the kernel: boot progress, panic screen, probes (`kits/sirius` in the tree) |
 | `drivers/ArmCpu`, `drivers/DarwinBoot` | board forks of the two components this port changes |
+| `uboot/` | U-Boot as a pinned submodule (`uboot/src`, branch `sirius/v2.0`), the environment file that adds the UniXNU boot chain, and `build.sh` for `boot-unixnu.img` |
+| `efi/` | the EDK II package (`UniXNUPkg`, `Scripts`) this port builds `UniXNU.efi` and the DXE drivers from, vendored so the repository can build the whole chain |
 | `scripts/` | board build recipes, the U-Boot payload finisher and the entry-probe patcher |
 | `porting.toml` | per-area porting record (status, evidence, limits, next action) |
 | `docs/HANDOFF.zh-CN.md` | the maintainer handoff: architecture, build-deploy loop, solved problems |

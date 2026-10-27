@@ -1,0 +1,48 @@
+## @file
+#  Smoke-test payload: reports what UniXNU handed over (load options,
+#  patched DTB, injected driver, initrd media, variables) on ConOut.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010019
+  BASE_NAME      = HelloPayload
+  FILE_GUID      = 3E16C4EE-F825-4B27-B7BC-E46041D641B5
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = HelloPayloadEntry
+
+[Sources]
+  HelloPayload.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+  UniXNUPkg/Test/UniXNUTest.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DevicePathLib
+  FdtLib
+  MemoryAllocationLib
+  PrintLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Guids]
+  gUniXNUBlockSliceGuid    ## CONSUMES
+  gUniXNUVariableGuid      ## CONSUMES
+  gFdtTableGuid               ## CONSUMES
+  gLinuxEfiInitrdMediaGuid    ## CONSUMES
+
+[Protocols]
+  gUniXNUSampleProtocolGuid  ## CONSUMES
+  gEfiBlockIoProtocolGuid       ## CONSUMES
+  gEfiDevicePathProtocolGuid    ## CONSUMES
+  gEfiLoadFile2ProtocolGuid     ## CONSUMES
+  gEfiLoadedImageProtocolGuid   ## CONSUMES

@@ -1,0 +1,57 @@
+# UniXNU smoke-test configuration (QEMU virt + AAVMF).
+# Exercises: kits (match + skip), driver injection, global and per-entry DT
+# patches, a DT overlay, /chosen, initrd media, entry variables, timeout.
+version = 1
+
+[boot]
+timeout = 3
+default = "hello"
+rotate = 1
+
+[ui]
+title = "UniXNU"
+
+[kits]
+autoload = true
+
+# Applied to every entry that has a dtb, before the entry's own patches.
+[[dt_patch]]
+op = "set"
+node = "/unixnu-test"
+prop = "marker"
+value = "patched"
+
+[[entry]]
+id = "hello"
+title = "Hello payload (full injection)"
+type = "efi"
+path = "Payloads/HelloPayload.efi"
+args = "expect dtb overlay driver initrd var shutdown"
+dtb = "DeviceTree/test.dtb"
+initrd = "initrd.txt"
+
+[entry.chosen]
+bootargs = "console=ttyAMA0 unixnu.test=1"
+
+[[entry.variable]]
+guid = "F50548AC-B469-47C6-89EA-C1738B812165"
+name = "UniXNUTest"
+value = "hello-variable"
+
+[[entry]]
+id = "hello-plain"
+title = "Hello payload (plain)"
+path = "Payloads/HelloPayload.efi"
+args = "plain shutdown"
+
+[[entry]]
+id = "reset"
+title = "Restart"
+type = "action"
+action = "reset"
+
+[[entry]]
+id = "shutdown"
+title = "Power off"
+type = "action"
+action = "shutdown"

@@ -1,0 +1,18 @@
+## @file
+#  Test-only declarations (QEMU smoke payloads). Not needed by platforms.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010019
+  PACKAGE_NAME      = UniXNUTest
+  PACKAGE_GUID      = 7736FB07-995C-4602-B3D1-65302C7E2438
+  PACKAGE_VERSION   = 0.1
+
+[Includes]
+  Include
+
+[Protocols]
+  gUniXNUSampleProtocolGuid = { 0xaaf1116f, 0x7b72, 0x468c, { 0xa2, 0x9e, 0x36, 0x31, 0x73, 0x2f, 0x2b, 0x84 } }

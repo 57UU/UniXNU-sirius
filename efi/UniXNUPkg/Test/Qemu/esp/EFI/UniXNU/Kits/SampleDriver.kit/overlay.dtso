@@ -1,0 +1,9 @@
+// Overlay applied to every entry DTB while the SampleDriver kit is loaded.
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	unixnu-overlay {
+		status = "applied";
+	};
+};

@@ -1,0 +1,1 @@
+UNIXNU-INITRD-OK this text stands in for an initramfs

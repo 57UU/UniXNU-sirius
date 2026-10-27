@@ -1,0 +1,13 @@
+# Kit that must be skipped: its [match] names a board that does not exist.
+schema = 1
+
+[kit]
+name = "NeverMatch"
+version = "0.0.1"
+description = "Negative test for [match]."
+
+[match]
+fdt_compatible = "unixnu,no-such-board"
+
+[[driver]]
+file = "Missing.efi"

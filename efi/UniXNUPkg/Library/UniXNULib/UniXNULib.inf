@@ -1,0 +1,71 @@
+## @file
+#  UniXNU boot manager core, shared by the application and the DXE driver.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010019
+  BASE_NAME      = UniXNULib
+  FILE_GUID      = 2EA3E316-7EC4-4867-9FEA-ABE1D4E9DBA6
+  MODULE_TYPE    = UEFI_DRIVER
+  VERSION_STRING = 0.1
+  LIBRARY_CLASS  = UniXNULib|UEFI_APPLICATION UEFI_DRIVER DXE_DRIVER
+
+[Sources]
+  Internal.h
+  Boot.c
+  Config.c
+  Font.c
+  Inject.c
+  Kext.c
+  Logo.c
+  Main.c
+  Menu.c
+  Slice.c
+  Toml.c
+  Ui.c
+  Volume.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  FdtLib
+  MemoryAllocationLib
+  PcdLib
+  PrintLib
+  UefiBootServicesTableLib
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Guids]
+  gEfiFileInfoGuid                ## CONSUMES
+  gFdtTableGuid                   ## SOMETIMES_CONSUMES ## SOMETIMES_PRODUCES
+  gLinuxEfiInitrdMediaGuid        ## SOMETIMES_PRODUCES
+  gUniXNUBlockSliceGuid        ## SOMETIMES_PRODUCES
+
+[Protocols]
+  gEfiAcpiTableProtocolGuid         ## SOMETIMES_CONSUMES
+  gEfiBlockIoProtocolGuid           ## SOMETIMES_CONSUMES ## SOMETIMES_PRODUCES
+  gEfiPartitionInfoProtocolGuid     ## SOMETIMES_CONSUMES
+  gEfiDevicePathProtocolGuid        ## CONSUMES
+  gEfiFirmwareVolume2ProtocolGuid   ## SOMETIMES_CONSUMES
+  gEfiGraphicsOutputProtocolGuid    ## SOMETIMES_CONSUMES
+  gEfiLoadedImageProtocolGuid       ## CONSUMES
+  gEfiLoadFile2ProtocolGuid         ## SOMETIMES_PRODUCES
+  gEfiSerialIoProtocolGuid          ## SOMETIMES_CONSUMES
+  gEfiSimpleFileSystemProtocolGuid  ## SOMETIMES_CONSUMES
+  gEfiSimpleTextInProtocolGuid      ## SOMETIMES_CONSUMES
+  gUniXNULoaderProtocolGuid   ## SOMETIMES_CONSUMES
+  gUniXNUMenuPluginProtocolGuid ## SOMETIMES_CONSUMES
+
+[Pcd]
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUConfigPath

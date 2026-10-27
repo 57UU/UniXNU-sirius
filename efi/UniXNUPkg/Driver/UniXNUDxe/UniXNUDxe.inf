@@ -1,0 +1,55 @@
+## @file
+#  Firmware integration of UniXNU: a registrar DXE driver.
+#
+#  Put this driver and UniXNUPkg/Application/UniXNU/UniXNU.inf in the
+#  same firmware volume. When dispatched, the driver registers a Boot####
+#  option for the UniXNU application file in that FV and moves it to the
+#  front of BootOrder, so the platform BDS starts UniXNU like any other
+#  boot manager (BDS only boots EFI_APPLICATION images). The option carries
+#  "unixnu:firmware" as optional data, which tells the application it was
+#  started by firmware.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x00010019
+  BASE_NAME      = UniXNUDxe
+  FILE_GUID      = 29B950CF-586D-49EA-9D71-F88645CCDAF6
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = UniXNUDxeEntry
+
+[Sources]
+  UniXNUDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  MemoryAllocationLib
+  PcdLib
+  PrintLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Guids]
+  gEfiGlobalVariableGuid              ## SOMETIMES_PRODUCES ## Variable:L"Boot####" L"BootOrder"
+
+[Protocols]
+  gEfiFirmwareVolume2ProtocolGuid     ## CONSUMES
+  gEfiLoadedImageProtocolGuid         ## CONSUMES
+
+[Pcd]
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUApplicationFile
+
+[Depex]
+  gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid

@@ -1,0 +1,52 @@
+## @file
+#  UniXNU: a device-agnostic UEFI boot manager.
+#
+#  Copyright (c) 2026, UniXNU contributors. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010019
+  PACKAGE_NAME      = UniXNUPkg
+  PACKAGE_GUID      = E2C7EB96-33AF-4BCD-BA70-26A6BAB3719D
+  PACKAGE_VERSION   = 0.1
+
+[Includes]
+  Include
+
+[LibraryClasses]
+  ##  @libraryclass  The boot manager core shared by the application and the
+  #                  DXE driver builds.
+  UniXNULib|Include/Library/UniXNULib.h
+
+[Guids]
+  gUniXNUPkgTokenSpaceGuid = { 0x13c7e6d7, 0x043c, 0x475b, { 0xba, 0x77, 0x0e, 0x79, 0xd5, 0xad, 0x88, 0x98 } }
+
+  ## Vendor namespace for UEFI variables that UniXNU itself defines.
+  gUniXNUVariableGuid      = { 0xf50548ac, 0xb469, 0x47c6, { 0x89, 0xea, 0xc1, 0x73, 0x8b, 0x81, 0x21, 0x65 } }
+
+  ## Vendor media node of block devices published by [[block_slice]]
+  #  (Include/Guid/UniXNUBlockSlice.h).
+  gUniXNUBlockSliceGuid    = { 0x63e1d76a, 0x715f, 0x4b8c, { 0x85, 0x0a, 0xe1, 0x58, 0xd1, 0x27, 0x0f, 0x9f } }
+
+[Protocols]
+  ## Optional loader for `type = "xnu"` entries. DarwinBoot implements it.
+  gUniXNULoaderProtocolGuid   = { 0x0f0a492e, 0x5a6a, 0x49f6, { 0xa1, 0xbf, 0x74, 0x3c, 0x87, 0xab, 0x1c, 0xfe } }
+
+  ## Optional protocol for tools listed in UniXNU's Tools menu.
+  gUniXNUMenuPluginProtocolGuid = { 0x1a9b2c4d, 0x5e6f, 0x4789, { 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x9a } }
+
+[PcdsFixedAtBuild]
+  ## DEBUG() level used for UniXNU's own log lines. Platforms whose debug
+  #  output shares the screen with the menu can lower it to DEBUG_VERBOSE.
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUDebugLevel|0x00000040|UINT32|0x00000001
+
+  ## Path of the configuration file on every scanned volume.
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUConfigPath|L"\\EFI\\UniXNU\\unixnu.toml"|VOID*|0x00000002
+
+  ## FV file name (GUID) of the UniXNU application that UniXNUDxe
+  #  registers as a boot option. Defaults to UniXNU.inf's FILE_GUID.
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUApplicationFile|{ GUID("9B665204-A133-47A2-9396-9E2B370A4E25") }|VOID*|0x00000003
+
+  ## ASCII model name reported by menu plugins that export device files.
+  gUniXNUPkgTokenSpaceGuid.PcdUniXNUDeviceModel|"UniXNU"|VOID*|0x00000004
