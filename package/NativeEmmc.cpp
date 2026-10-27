@@ -485,7 +485,17 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 	nemmc_pending_tail = request;
 	nemmc_queue_unlock();
 
-	thread_wakeup((event_t)&nemmc_worker);
+	/* The completion must run on the caller's work loop: completing from another thread re-enters
+	 * IOStorageFamily while this request's caller still holds the loop, and the queue stops there
+	 * (block count frozen, no error, worker asleep). Inline completion is the default; the worker
+	 * stays behind sirius_emmc_async=1 for comparison. */
+	unsigned async = 0;
+	PE_parse_boot_argn("sirius_emmc_async", &async, sizeof(async));
+	if (async != 0) {
+		thread_wakeup((event_t)&nemmc_worker);
+		return kIOReturnSuccess;
+	}
+	nemmc_drain_queue();
 	return kIOReturnSuccess;
 }
 
