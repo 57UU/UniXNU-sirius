@@ -194,19 +194,28 @@ fastboot.exe reboot
 
 1. **信任链回归**：换 IPSW 时要重新生成 bundle 并更新 `board.toml [payload] trust_cache_sha256`；
    `sirius-skip-exec-policy.patch` 保留但不再启用，作为退路。
-2. **exec 之后的停顿（已定位到 copyout 的 fault 循环）**：调用侧探针（`sirius-post-exec-trace.patch`）
-   显示 pid 1 线程一直是 `TH_RUN`，停在 `load_init_program_at_path` 的 `copyout()`
-   里（`_bcopyout+0x38` ← `_load_init_program_at_path+0x6c` ← `_bsdinit_task+0x74`），
-   一分钟内取了 **6267 万次 fault**——是 fault 重试死循环，不是睡眠或存储等待。
-   已知：PAN 不是原因（`NEMMC pan before 0`，且 `CONFIG_XNU_NATIVE_PAN=n` 让
-   `user_access_enable()` 是空函数）；映射也不是缺失——第一次是 level-1 translation fault，
-   之后 `pmap_find_phys` 找得到页、`AT S1E1W` 能翻译、`vm_fault` 返回 `KERN_SUCCESS`，
-   但重试的 store 变成 **level-3 permission fault**。下一步读原始叶表 PTE 的 AP 位，
-   判断是 pmap 把页映射成了只读，还是 CPU 用的页表不是 `vm_fault` 写的那个。
-3. **自动进 fastboot**：BCB 写 `uboot-fastboot` 能让下次启动进 U-Boot 自己的 fastboot（已上机验证），
-   但它刷分区会挂住，原因是 `f_fastboot.c` 在每次 queue 前先 dequeue，而这版 U-Boot 的 dwc3
-   还是老式 ENDTRANSFER/dequeue 路径；本机构建里已经带上删掉那次 dequeue 的一行补丁，待上机确认。
-   ABL 真正读的是 PMIC spare（`PON_SOFT_RB_SPARE` 0x88f=0x04），需要 `CONFIG_CMD_PMIC` 和确认 pmic 设备名。
+2. **exec 之后的停顿（fault 循环，指向 pmap/地址空间不切换）**：探针显示两种表现，都发生在
+   "刚映射完的页 CPU 仍然访问不到"：i) `copyout()` 里 pid 1 线程连续取 fault（一分钟 6267 万次），
+   第一次 level-1 translation、之后全是 level-3 permission，而 `pmap_find_phys` 找得到页、
+   `AT S1E1W` 能翻译、`vm_fault` 返回 `KERN_SUCCESS`；ii) exec 成功后 launchd 线程的入口
+   `0x100924e50` 已经拿到（`SIRIUS user thread start pc`），但它在用户态做**取指**
+   时对 3 个地址反复拿 instruction abort（ESR 0x82000007，level-3 translation fault），
+   一秒钟几百万次，且**一条 syscall 都没发出、读请求冻结在 0x10D**。
+   两者的共同解释是：`vm_fault` 把页映射进 `thread->map` 的 pmap，而 CPU 的 TTBR0 仍指向
+   另一个 pmap（同一地址在 `AT S1E1W` 与 `pmap_find_phys` 上给出不同物理页，已经量到）。
+   下一步：在 exec 的 `proc_exec_switch_task` 之后确认/强制 pmap 切换（或对比
+   `TTBR0_EL1` 与 `thread->map->pmap` 的根表），这是当前最可能的根因。
+   附带：这几轮 payload 曾漏掉 `--trust-cache`，AMFI 因此以 namespace 9/code 8 杀掉 launchd
+   （`no external trust caches found`）；带信任链重刷后 exec 正常走到
+   `init execve returned 0` + `execve activate 0`，AMFI 不再报 `exec policy`。
+3. **自动进 fastboot（只解决了一半）**：BCB 写 `uboot-fastboot` 能让下次启动进 U-Boot 自己的
+   fastboot（已上机验证两次），但**从它那里刷分区会挂住**：`f_fastboot.c` 每次 queue 前先 dequeue
+   （本机构建里已经删掉这一行并提交到 u-boot 子模块本地），刷 vendor 仍然挂，说明根因还在
+   dwc3 的 ENDTRANSFER/STARTTRANSFER 与缺 `DWC3_DEPCMD_STATUS` 处理（子代理对比 Linux 的 dwc3 给出的
+   结论）。ABL 真正读的是 PMIC spare（`PON_SOFT_RB_SPARE` 0x88f=0x04），写它需要 `CONFIG_CMD_PMIC`
+   加上确认 `pmic` 设备名；这条还没上机验证，所以现在仍是手动 Vol-Down + Power 进 ABL fastboot。
+   另外：U-Boot fastboot 会回报 `current-slot a`，主机因此把分区名加上 `_a`，环境里已用
+   `fastboot_partition_alias_<name>_a=<name>` 兜住。
 4. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需要在 `emmc_set_card_clock_25m` 之后加 CMD6
    （SWITCH，`HS_TIMING=1`），失败要能退回 25 MHz。
 5. **用户态后续**：data seed（`--data-ramdisk`）、`unique_chip_id`、dyld 缓存读取量、显示与触摸。
