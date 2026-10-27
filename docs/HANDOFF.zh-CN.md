@@ -44,11 +44,15 @@ ABL (boot 分区 = 我们重编的 U-Boot boot.img)
 | 存储（eMMC） | ✅ | SDCC1；SHNGROOT 窗口（OS/SystemOS）发布为块设备；整盘 0x747BFDF 扇区；GPT 由 IOStorageFamily 解析 |
 | 根文件系统 | ✅ | APFS 挂载 OS 卷 `disk2s1`；`bsd_init` 完整跑完；sealed-root 答案记录后继续 |
 | init / launchd | ✅ | `execve` 全链路通过（`cloneproc`→`proc locks`→`activate`→`namei 0`），`execve activate 0` |
+| PAN（ARMv8.1） | ✅ | SDM710 报 `FEAT_PAN2`（`ID_AA64MMFR1_EL1=0x10212122`），每次进 EL1 置 PAN；以前 defconfig 把 `CONFIG_XNU_NATIVE_PAN` 置 n，导致所有内核访问用户页 permission fault（62.6M/92.2M 次循环）。恢复 `=y` 后 exec 完成 |
 | 信任链 | ✅ | 原始 bundle（`7416ca4f…`，两个未改动模块）打进 payload，启动期初始化已补回；上机确认 AMFI 直接放行（`execve activate 0`，且 `exec policy answered` 不再出现），`sirius-skip-cs` 已从 boot args 移除 |
-| 用户态 | ⏳ | exec 成功后驱动不再收到请求，剩余等待在存储栈之外 |
+| 用户态 | 🔶 | launchd 真的跑起来了：入口 `0x1005dee50`，pid 1 fault 120 次（原 9222 万），24 条 syscall（open /dev/null、/dev/console、getpid、shared_region_check_np …），之后停在 dyld 共享缓存 |
+| dyld 共享缓存 | ⛔ | 挂载的 OS 卷没有缓存：`vnode_lookup` 对 `/System/Library/Caches/com.apple.dyld/`、`…_arm64`、`…_arm64e`、`/System/Cryptexes/OS/` 全 ENOENT，而 `/sbin/launchd`、`/usr/lib/dyld` 为 0；缓存实际在 `Cryptex1,SystemOS`（IPSW `044-76034`），本 port 未挂载该卷 |
 | 时钟 | 🔶 | 400 kHz → 25 MHz 已上机验证（`EMMC clock25=ok`）；50 MHz 需 CMD6 高速模式 |
 
-**最新一次部署**：kernel `75a4a4da…`（含 25 MHz、启动期信任链初始化、原始 bundle），payload 内 `Payloads/kernel.macho.trustcache`。
+**最新一次部署**：kernel `8091fb20…`（PAN 修复 + pid 1 路径/写探针），boot args 已含 `ignition_level=1`、`launchd_unsecure_cache=1`（按 ios-sweet 的做法，libignition 只找系统卷上的缓存）；payload 内 `Payloads/kernel.macho.trustcache`。
+
+**当前阻塞与下一步**（详见 §5 第 2、5 条和 `porting.toml` 的 diagnostics.next_action）：把 `/System/Library/Caches/com.apple.dyld/` 变成根卷上可见的路径（方案 A：root 直接匹配 SystemOS 卷，需要它的 UUID；方案 B：把缓存文件放进 OS 卷），并给 ADT 加 `/chosen/asmb`（`lp-sip0=0x6f`、`lp-sip1=1`）让 `vm_unix.c` 接受不在信任链里的缓存。
 
 **恢复 Linux**：`fastboot flash boot ~/Projects/sirius-distro/build/boot.img`（原版 U-Boot，不认标记），之后再刷回 `boot-unixnu.img`。
 
@@ -232,15 +236,30 @@ fastboot.exe reboot
    `fastboot_partition_alias_<name>_a=<name>` 兜住。
 4. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需要在 `emmc_set_card_clock_25m` 之后加 CMD6
    （SWITCH，`HS_TIMING=1`），失败要能退回 25 MHz。
-5. **用户态：下一个卡点是 shared region（dyld 共享缓存）**。launchd 现在能跑，但
-   `shared_region_check_np` 走到 `vm_shared_region_start_address()` 就失败（返回 12 = ENOMEM，
-   每几秒重试一次），而那期间 **eMMC 读计数停在 `0x113` 不动** → 说明不是文件读失败，是
-   shared region 根本还没建立（dyld 想先拿到它的起始地址）。参考 fuxi-mouse233 记录里的
-   v41（`SYS_shared_region_map_and_slide_2_np` 返回 0、stage=10）来对齐这一步：先找
-   本 port 里应该在第一次 `shared_region_check_np` 之前调用
-   `shared_region_map_and_slide_2_np` 的路径，以及 root/payload 里 dyld 共享缓存应该从哪来
-   （`/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e`、SystemOS 还是 payload）。
+5. **用户态：dyld 共享缓存（唯一剩下的内核前阻塞）**。launchd 已经跑起来（24 条 syscall），
+   停因是 `dyld` 在**根卷上找不到缓存**：`shared_region_check_np` 的“空 region”报错是**正常**的
+   （ios-sweet 的 NOTES 里有同一行，dyld 随后会自己 map），真正的失败是缓存路径不存在 ——
+   `vnode_lookup` 实测 `/System/Library/Caches/com.apple.dyld/`、`…_arm64`、`…_arm64e`、
+   `/System/Cryptexes/OS/` 全 ENOENT，而 `/sbin/launchd`、`/usr/lib/dyld` 为 0。
+   缓存真实位置：IPSW `Cryptex1,SystemOS` = `044-76034-038.dmg`（`7z l` 可看到
+   `System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.03/.04/.32/.35/.50`），
+   本 port 挂的 OS 卷（`044-76040`）里没有。
+   **照 ios-sweet 的做法**（它用 iOS 16 + iPhone X 用户态跑到桌面）：
+   1) 缓存必须出现在**根卷**的 `/System/Library/Caches/com.apple.dyld/`（它把 cryptex 的缓存
+      硬链接进去；我们可以在构建期拷贝，或让 root 直接匹配 SystemOS 卷）；
+   2) 启动参数 `ignition_level=1`（**已加**，验证 `ignition level : 0x1`），让 libignition 跳过
+      preboot/cryptex 阶段、只读系统卷路径；不要设 `ignition_halt_after`（`halt after stage: n/a`
+      是未设置时的显示值）；
+   3) ADT 加 `/chosen/asmb`：`lp-sip0=0x6f`、`lp-sip1=1`，否则 `vm_unix.c` 会以
+      `vnode is not SIP-protected` 拒绝映射不在信任链里的缓存（生成器在
+      `UniXNU/scripts/unixnu/devicetree.py:334`，`root-matching` 就是同文件 325 行的 XML 写法）；
+   4) 启动参数 `launchd_unsecure_cache=1`（**已加**），免得 launchd 的 job cache 因没有 AMFI 中止。
    之后才是 data seed（`--data-ramdisk`）、`unique_chip_id`、显示与触摸。
+6. **刷机流程（已自动化）**：`scripts/flash-when-fastboot.py <payload.img>` 自己轮询
+   `fastboot devices`，只对 `product: sirius` 且 `version-bootloader` 为空的 ABL fastboot 动手；
+   `fastboot` 的报告走 **stderr**（脚本已改）。U-Boot 自己的 fastboot 不能写分区，但能
+   `fastboot erase misc`——本 port 的 `unixnu_arm` 每次启动都会给下一次启动写 BCB，所以刷完重启
+   容易落进 U-Boot fastboot，脚本会自动 erase + 重启绕回 UniXNU。
 
 ## 6. 环境清单
 
