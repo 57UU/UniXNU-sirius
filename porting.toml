@@ -202,6 +202,7 @@ findings = [
   "The 25 MHz switch reads the GPT signature back at the new rate on device (the probe prints EMMC clock25=ok), so the RCG encoding above is confirmed rather than assumed.",
   "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
   "The init exec returns 0 and then nothing asks the driver for another block: reads stop at 0x10D (269 requests, 0x98F blocks) while the heartbeat keeps counting, so the wait is past the storage stack. The caller side is now instrumented (sirius-post-exec-trace.patch): the exec thread-switch state, every new user thread start at thread_bootstrap_return, the first pid 1 syscalls with their returns, each bsd_ast for pid 1 and the first user faults after the exec, all written to the same USB ring and summarised by the heartbeat.",
+  "The caller-side probe closes that question: the pid 1 thread stays in load_init_program_at_path, inside copyout() of the launchd path, and takes 62.6 million faults in about a minute. The stall is a fault loop in the exec path, not a storage wait.",
 ]
 completion = [
   "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
@@ -478,6 +479,10 @@ findings = [
   "The USB panel row names its fields after what they hold (step, txev, rxev, chars, echo, poll) instead of the register names they were first wired to, so a photograph can be read without the source.",
   "The CDC console hands the console ring to the host once per attach: the pump timing that works (a short inline poll loop that breaks after the ring is drained) delivered the 3813-byte boot log on every attempt, while longer loops and a DTR-gated pump delivered nothing, so that timing is treated as load-bearing until the periodic path runs during bsd_init.",
   "The post-exec wait is instrumented on the kernel side rather than through the driver: sirius-post-exec-trace.patch prints the exec thread-switch flags, every user thread start (from thread_bootstrap_return, so one line means the exec'd thread never ran and two mean it did), the first pid 1 syscalls with their returns, every bsd_ast for pid 1 and the first user faults after the exec, and the eMMC heartbeat prints the counters so one capture answers the question.",
+  "The exec does not stall after activate: load_init_program prints the scratch page (0x1000, the first free page of the init map), then the init thread is inside copyout() and takes 62,673,044 faults in about a minute while it stays TH_RUN, so the wait is a tight fault-retry loop, not a sleep.",
+  "PAN is not the cause: the kernel reports PAN implemented with PSTATE.PAN already 0, and CONFIG_XNU_NATIVE_PAN=n compiles copyio's user_access_enable()/disable() away anyway, so nothing in this kernel ever sets it.",
+  "The mapping is not missing either: the first fault is a level-1 translation fault, but afterwards pmap_find_phys finds the page, AT S1E1W resolves the same address and vm_fault returns KERN_SUCCESS, while the retried store faults again as a level-3 permission fault; the raw leaf PTE the pmap holds is now dumped next to ESR/FAR/PC to see which AP bits it carries.",
+  "The pid 1 kernel stack, dumped out of band by the heartbeat and symbolized against mach.development.bcm2837.unstripped, shows _bcopyout+0x38 under _load_init_program_at_path+0x6c under _bsdinit_task+0x74, which is the copyout of the launchd path.",
 ]
 completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",
@@ -518,6 +523,9 @@ findings = [
   "mmc 0:50 is a hexadecimal partition number (0x50 = 80 = the vendor partition); 0:80 is read as 0x80 = 128 and fails with 'Invalid partition 128'.",
   "bootflow scan cannot find p80: it stops after the first 30 partitions of each device, so the boot chain uses load/bootefi with the partition spelled out.",
   "The UniXNU boot chain used to live only in an unversioned scratch directory (the environment file and boot-unixnu.img), so the boot image could not be rebuilt from any repository; both the file and the recipe are in uboot/ now.",
+  "U-Boot's fastboot gadget answers the whole getvar dialogue but flashing the vendor partition hangs; the repeated 'request ... was not queued to ep1in-bulk' line is fastboot_tx_write() cancelling the IN request before every queue, a dequeue miss rather than a rejected transfer, and stock 2026.07 never received the modern dwc3 ENDTRANSFER/dequeue rework, so that cancel can strand a TRB the controller still owns. Removing the dequeue is the candidate fix.",
+  "Writing the BCB command 'uboot-fastboot' before booting UniXNU does bring the next start into U-Boot's own fastboot on the phone, so entering it is solved while flashing from it is not; the PMIC spare ABL actually reads (PON_SOFT_RB_SPARE, 0x88f = 0x04 in U-Boot's PID/offset encoding) still needs CONFIG_CMD_PMIC and a verified pmic device name.",
+  "U-Boot's fastboot reports slot a, so the host appends _a to every partition name it flashes; fastboot_partition_alias_<name>_a=<name> in the environment maps both spellings onto the real GPT names.",
 ]
 completion = [
   "uboot/build.sh reproduces boot-unixnu.img from a fresh clone; with the marker in the payload U-Boot starts UniXNU.efi, and without it the phone boots Linux.",
@@ -528,6 +536,7 @@ limits = [
   "The U-Boot submodule is shallow and pinned by commit; rebasing onto a newer sirius/v2.0 is a deliberate update.",
 ]
 next_action = [
+  "Test the f_fastboot dequeue removal end to end: after a power cycle, flash boot from U-Boot's own fastboot and, if that works, arm the BCB before booting UniXNU so a hung run comes back to a usable fastboot without the chord.",
   "Build UniXNU.efi from efi/ once and compare it with the framework's output, so the vendored copy is known good rather than assumed.",
 ]
 evidence = [

@@ -14,30 +14,123 @@ diff --git a/osfmk/arm64/locore.s b/osfmk/arm64/locore.s
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -687,6 +687,22 @@
+@@ -61,6 +61,7 @@
+ #include <vm/pmap.h>
+ #include <vm/vm_fault.h>
+ #include <vm/vm_kern.h>
++#include <vm/vm_map.h>
+ 
+ #include <sys/errno.h>
+ #include <sys/kdebug.h>
+@@ -687,6 +688,35 @@
  		    esr, VM_KERNEL_ADDRHIDE(far), VM_KERNEL_UNSLIDE(get_saved_state_pc(state)), 0, 0);
  	}
  
 +	/*
-+	 * sirius: after the init exec the only userland thread is the launchd image, so the first
-+	 * user faults say whether it ran and which page it stopped on. The eMMC heartbeat reads the
-+	 * counters back; nothing here touches storage.
++	 * sirius: record the first faults of the pid 1 thread instead of printing them. A fault that
++	 * keeps being retried is exactly a thread that runs and prints nothing, and a kprintf from
++	 * this path can deadlock on the console the faulting thread already holds, so the heartbeat
++	 * reads the log back out of band.
 +	 */
-+	if (is_user) {
-+		extern volatile int sirius_user_probe_armed;
-+		extern volatile int sirius_user_faults;
++	{
++		extern volatile unsigned long long sirius_fault_log[8][5];
++		extern volatile int sirius_fault_log_count;
++		extern thread_t sirius_init_thread;
++		int slot = sirius_fault_log_count;
 +
-+		if (sirius_user_probe_armed && sirius_user_faults < 8) {
-+			sirius_user_faults++;
-+			kprintf("sirius: user fault class %x esr %x far %p pc %p\n",
-+			    (unsigned)class, esr, (void *)far, (void *)get_saved_state_pc(state));
++		if (sirius_init_thread != THREAD_NULL &&
++		    current_thread() == sirius_init_thread) {
++			extern volatile unsigned long long sirius_fault_total;
++
++			sirius_fault_total++;
++		}
++		if (slot < 8 && sirius_init_thread != THREAD_NULL &&
++		    current_thread() == sirius_init_thread) {
++			sirius_fault_log[slot][0] = (unsigned long long)(unsigned int)class;
++			sirius_fault_log[slot][1] = esr;
++			sirius_fault_log[slot][2] = far;
++			sirius_fault_log[slot][3] = get_saved_state_pc(state);
++			sirius_fault_log[slot][4] = is_user ? 1 : 0;
++			sirius_fault_log_count = slot + 1;
 +		}
 +	}
 +
  	if (__improbable(ESR_INSTR_IS_2BYTES(esr))) {
  		/*
  		 * We no longer support 32-bit, which means no 2-byte
-@@ -2398,3 +2414,44 @@
+@@ -1778,6 +1808,22 @@
+ 		vm_map_t      map;
+ 		int           interruptible;
+ 
++		/* sirius: record what the fault is being resolved against. A page that opens in a
++		 * pmap the CPU is not using looks exactly like this: the fault repeats forever. */
++		{
++			extern volatile unsigned long long sirius_fault_extra[10];
++			extern thread_t sirius_init_thread;
++
++			if (current_thread() == sirius_init_thread) {
++				sirius_fault_extra[0] = (unsigned long long)(uintptr_t)thread->map;
++				sirius_fault_extra[1] = (unsigned long long)(uintptr_t)thread->map->pmap;
++				sirius_fault_extra[2] = (unsigned long long)__builtin_arm_rsr("TTBR0_EL1");
++				sirius_fault_extra[3] = (unsigned long long)(uintptr_t)recover;
++				sirius_fault_extra[4] = (unsigned long long)fault_addr;
++				sirius_fault_extra[5] = (unsigned long long)fault_code;
++			}
++		}
++
+ 		/*
+ 		 * Ensure no faults in the physical aperture. This could happen if
+ 		 * a page table is incorrectly allocated from the read only region
+@@ -1848,9 +1894,48 @@
+ 			result = vm_fault(map, fault_addr, fault_type,
+ 			    /* change_wiring */ FALSE, VM_KERN_MEMORY_NONE, interruptible,
+ 			    /* caller_pmap */ NULL, /* caller_pmap_addr */ 0);
++			{
++				extern volatile unsigned long long sirius_fault_extra[10];
++				extern thread_t sirius_init_thread;
++
++				if (current_thread() == sirius_init_thread) {
++					uint64_t par;
++
++					sirius_fault_extra[6] = (unsigned long long)result;
++					/* The pmap's own view and the hardware's view of the same address: a
++					 * present PTE with a failed translation means the TLB or the active
++					 * table is not the one vm_fault just wrote. */
++					sirius_fault_extra[7] =
++					    (unsigned long long)pmap_find_phys(map->pmap, fault_addr);
++					__asm__ volatile("at s1e1w, %0" :: "r"(fault_addr) : "memory");
++					__asm__ volatile("mrs %0, PAR_EL1" : "=r"(par));
++					sirius_fault_extra[8] = (unsigned long long)par;
++					/*
++					 * Which address space does the CPU actually walk for this user
++					 * address? If the kernel pmap holds a translation the thread's pmap
++					 * does not, the fault is being taken in the wrong space and the page
++					 * vm_fault opens will never be the one the store uses.
++					 */
++					sirius_fault_extra[9] =
++					    (unsigned long long)pmap_find_phys(kernel_pmap, fault_addr);
++				}
++			}
+ 		}
+ 
+ 		if (result == KERN_SUCCESS) {
++			/*
++			 * sirius: the pid 1 exec faults writing its strings into the init map. The
++			 * pmap ends up holding the page (pmap_find_phys and AT S1E1W both resolve it),
++			 * yet the retried store faults again, which is what a translation fault cached
++			 * in the TLB looks like when the invalidation never reaches this address. The
++			 * copyio path has no restart, so make the mapping visible before retrying.
++			 */
++			if (recover != NULL) {
++				extern void flush_mmu_tlb_region(vm_offset_t va, unsigned length);
++
++				flush_mmu_tlb_region(fault_addr & ~(vm_offset_t)(PAGE_SIZE - 1),
++				    (unsigned)PAGE_SIZE);
++			}
+ 			return;
+ 		}
+ 
+@@ -2398,3 +2483,44 @@
  SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
  
  #endif

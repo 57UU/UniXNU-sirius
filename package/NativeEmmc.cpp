@@ -123,6 +123,15 @@ volatile uint32_t nemmc_heartbeats;
 extern "C" {
 volatile int sirius_user_probe_armed;      /* set once the init exec succeeded */
 volatile int sirius_user_faults;           /* user faults taken since then */
+volatile int sirius_kernel_faults;         /* pid 1 faults taken in kernel mode */
+/* Faults of the pid 1 thread, recorded in the handler and printed by the heartbeat: a kprintf
+ * from inside the fault path can deadlock on the console the faulting thread already holds. */
+volatile unsigned long long sirius_fault_log[8][5];
+volatile int sirius_fault_log_count;
+/* The environment of the last pid 1 fault: map, its pmap, the live TTBR0, the copyio recovery
+ * entry, the fault address and its fault code. */
+volatile unsigned long long sirius_fault_extra[10];
+volatile unsigned long long sirius_fault_total;
 volatile int sirius_init_syscalls;         /* syscalls entered by pid 1 */
 volatile int sirius_init_syscall_returns;  /* ... and returned from */
 volatile int sirius_init_asts;             /* bsd_ast runs for pid 1 */
@@ -153,6 +162,39 @@ sirius_user_thread_probe(void)
 
 static unsigned int nemmc_stack_dumps;
 
+/* PSTATE.PAN is set on every exception entry when SCTLR_EL1.SPAN is set, and a set PAN makes
+ * every privileged access to a user page fault. This kernel is built with CONFIG_XNU_NATIVE_PAN=n,
+ * so copyio.c's user_access_enable()/disable() are empty and nothing would ever clear it, which
+ * turns the first kernel write into the init process's map into a fault that the fast fault path
+ * resolves and immediately takes again. Clear it once, guarded by the feature check: on cores
+ * without PAN the instruction is undefined. */
+static int
+nemmc_pan_implemented(void)
+{
+	uint64_t mmfr1;
+
+	__asm__ volatile("mrs %0, ID_AA64MMFR1_EL1" : "=r"(mmfr1));
+	return ((mmfr1 >> 20) & 0xf) != 0;
+}
+
+static void
+nemmc_report_pan(void)
+{
+	uint64_t pan;
+
+	emmc_log_dec("NEMMC pan implemented ", (uint64_t)nemmc_pan_implemented());
+	if (!nemmc_pan_implemented()) {
+		return;
+	}
+	/* PSTATE.PAN as a system register (S3_0_C4_C2_3): clang's named form does not accept it. */
+	pan = (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3");
+	emmc_log_dec("NEMMC pan before ", pan);
+	if (pan != 0) {
+		__builtin_arm_wsr("S3_0_C4_C2_3", 0);
+		emmc_log_dec("NEMMC pan after ", (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3"));
+	}
+}
+
 static void
 nemmc_dump_init_stack(void)
 {
@@ -163,8 +205,14 @@ nemmc_dump_init_stack(void)
 	emmc_log_hex("SIRIUS init state/wait ",
 	    ((uint64_t)sirius_thread_state(thread) << 40) |
 	    (sirius_thread_wait_event(thread) & 0xffffffffffULL));
-	for (unsigned int i = 0; i < 96; i++) {
-		emmc_log_hex("SIRIUS stack ", sirius_thread_kstack_word(thread, i));
+	/* A kernel stack is 16 KiB; scan 4 KiB of it and keep only the words that point into
+	 * kernel text, which is the call chain the thread is sitting in. */
+	for (unsigned int i = 0; i < 512; i++) {
+		uint64_t word = sirius_thread_kstack_word(thread, i);
+
+		if (word >= 0xfffffff007004000ULL && word < 0xfffffff010000000ULL) {
+			emmc_log_hex("SIRIUS pc ", word);
+		}
 	}
 }
 
@@ -193,6 +241,31 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		emmc_log_dec("NEMMC probe init syscalls ", sirius_init_syscalls);
 		emmc_log_dec("NEMMC probe init returns ", sirius_init_syscall_returns);
 		emmc_log_dec("NEMMC probe init asts ", sirius_init_asts);
+		emmc_log_dec("NEMMC probe init faults ", sirius_fault_total);
+		{
+			static int reported;
+
+			if (sirius_fault_extra[0] != 0 && (nemmc_heartbeats % 8) == 0) {
+				emmc_log_hex("SIRIUS fault map ", sirius_fault_extra[0]);
+				emmc_log_hex("SIRIUS fault pmap ", sirius_fault_extra[1]);
+				emmc_log_hex("SIRIUS fault ttbr0 ", sirius_fault_extra[2]);
+				emmc_log_hex("SIRIUS fault recover ", sirius_fault_extra[3]);
+				emmc_log_hex("SIRIUS fault addr ", sirius_fault_extra[4]);
+				emmc_log_hex("SIRIUS fault code ", sirius_fault_extra[5]);
+				emmc_log_hex("SIRIUS fault result ", sirius_fault_extra[6]);
+				emmc_log_hex("SIRIUS fault pte ", sirius_fault_extra[7]);
+				emmc_log_hex("SIRIUS fault par ", sirius_fault_extra[8]);
+				emmc_log_hex("SIRIUS fault kernpte ", sirius_fault_extra[9]);
+			}
+			while (reported < sirius_fault_log_count && reported < 8) {
+				emmc_log_hex("SIRIUS fault class ", sirius_fault_log[reported][0]);
+				emmc_log_hex("SIRIUS fault esr ", sirius_fault_log[reported][1]);
+				emmc_log_hex("SIRIUS fault far ", sirius_fault_log[reported][2]);
+				emmc_log_hex("SIRIUS fault pc ", sirius_fault_log[reported][3]);
+				emmc_log_dec("SIRIUS fault user ", sirius_fault_log[reported][4]);
+				reported++;
+			}
+		}
 		if (sirius_launchd_thread != nullptr) {
 			emmc_log_hex("NEMMC launchd thread ", (uint64_t)(uintptr_t)sirius_launchd_thread);
 			emmc_log_hex("NEMMC launchd state/wait ",
@@ -770,6 +843,7 @@ NativeEmmc::start(IOService *provider)
 {
 	fBlock = nullptr;
 	emmc_log("NativeEmmc: step 4 base start\n");
+	nemmc_report_pan();
 	if (!IOService::start(provider)) {
 		return false;
 	}

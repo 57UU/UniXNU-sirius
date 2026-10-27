@@ -194,12 +194,22 @@ fastboot.exe reboot
 
 1. **信任链回归**：换 IPSW 时要重新生成 bundle 并更新 `board.toml [payload] trust_cache_sha256`；
    `sirius-skip-exec-policy.patch` 保留但不再启用，作为退路。
-2. **exec 之后的停顿**：`execve activate 0` 之后驱动没有在途传输、读请求也不再增长，
-   说明等待发生在存储栈之外。下一步在调用侧（`bsd_init` 之后、launchd 入口）加检查点，
-   而不是继续改传输路径。
-3. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需要在 `emmc_set_card_clock_25m` 之后加 CMD6
+2. **exec 之后的停顿（已定位到 copyout 的 fault 循环）**：调用侧探针（`sirius-post-exec-trace.patch`）
+   显示 pid 1 线程一直是 `TH_RUN`，停在 `load_init_program_at_path` 的 `copyout()`
+   里（`_bcopyout+0x38` ← `_load_init_program_at_path+0x6c` ← `_bsdinit_task+0x74`），
+   一分钟内取了 **6267 万次 fault**——是 fault 重试死循环，不是睡眠或存储等待。
+   已知：PAN 不是原因（`NEMMC pan before 0`，且 `CONFIG_XNU_NATIVE_PAN=n` 让
+   `user_access_enable()` 是空函数）；映射也不是缺失——第一次是 level-1 translation fault，
+   之后 `pmap_find_phys` 找得到页、`AT S1E1W` 能翻译、`vm_fault` 返回 `KERN_SUCCESS`，
+   但重试的 store 变成 **level-3 permission fault**。下一步读原始叶表 PTE 的 AP 位，
+   判断是 pmap 把页映射成了只读，还是 CPU 用的页表不是 `vm_fault` 写的那个。
+3. **自动进 fastboot**：BCB 写 `uboot-fastboot` 能让下次启动进 U-Boot 自己的 fastboot（已上机验证），
+   但它刷分区会挂住，原因是 `f_fastboot.c` 在每次 queue 前先 dequeue，而这版 U-Boot 的 dwc3
+   还是老式 ENDTRANSFER/dequeue 路径；本机构建里已经带上删掉那次 dequeue 的一行补丁，待上机确认。
+   ABL 真正读的是 PMIC spare（`PON_SOFT_RB_SPARE` 0x88f=0x04），需要 `CONFIG_CMD_PMIC` 和确认 pmic 设备名。
+4. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需要在 `emmc_set_card_clock_25m` 之后加 CMD6
    （SWITCH，`HS_TIMING=1`），失败要能退回 25 MHz。
-4. **用户态后续**：data seed（`--data-ramdisk`）、`unique_chip_id`、dyld 缓存读取量、显示与触摸。
+5. **用户态后续**：data seed（`--data-ramdisk`）、`unique_chip_id`、dyld 缓存读取量、显示与触摸。
 
 ## 6. 环境清单
 
