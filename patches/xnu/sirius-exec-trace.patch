@@ -1,8 +1,68 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 4308896..bf47271 100644
+index 8c1edf9..80d5b64 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -8072,7 +8072,9 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+@@ -4015,9 +4015,7 @@ posix_spawn
+ 		 * the old proc in pid hash and other lists that make
+ 		 * the proc visible to the system.
+ 		 */
+-		printf("sirius: exec cloneproc enter\n");
+ 		imgp->ip_new_thread = cloneproc(old_task, NULL, p, CLONEPROC_EXEC);
+-		printf("sirius: exec cloneproc done\n");
+ 
+ 		/* task and thread ref returned by cloneproc */
+ 		if (imgp->ip_new_thread == NULL) {
+@@ -4241,9 +4239,7 @@ posix_spawn
+ 
+ #if MAC_SPAWN   /* XXX */
+ 	if (uap->mac_p != USER_ADDR_NULL) {
+-		printf("sirius: exec mac_enter enter\n");
+ 		error = mac_execve_enter(uap->mac_p, imgp);
+-		printf("sirius: exec mac_enter %d\n", error);
+ 		if (error) {
+ 			goto bad;
+ 		}
+@@ -4256,9 +4252,7 @@ posix_spawn
+ 	 * Warning: If activation failed after point of no return, it returns error
+ 	 * as 0 and pretends the call succeeded.
+ 	 */
+-	printf("sirius: exec activate enter\n");
+ 	error = exec_activate_image(imgp);
+-	printf("sirius: exec activate %d\n", error);
+ #if defined(HAS_APPLE_PAC)
+ 	const uint8_t disable_user_jop = imgp->ip_flags & IMGPF_NOJOP ? TRUE : FALSE;
+ 	ml_task_set_jop_pid_from_shared_region(new_task, disable_user_jop);
+@@ -5222,7 +5216,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+ 
+ #if CONFIG_MACF
+ 	if (uap->mac_p != USER_ADDR_NULL) {
++		printf("sirius: execve mac_enter enter\n");
+ 		error = mac_execve_enter(uap->mac_p, imgp);
++		printf("sirius: execve mac_enter %d\n", error);
+ 		if (error) {
+ 			goto exit_with_error;
+ 		}
+@@ -5241,7 +5237,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+ 		 * the old proc in pid hash and other lists that make
+ 		 * the proc visible to the system.
+ 		 */
++		printf("sirius: execve cloneproc enter\n");
+ 		imgp->ip_new_thread = cloneproc(old_task, NULL, p, CLONEPROC_EXEC);
++		printf("sirius: execve cloneproc done\n");
+ 		/* task and thread ref returned by cloneproc */
+ 		if (imgp->ip_new_thread == NULL) {
+ 			(void)chgproccnt(kauth_getruid(), -1);
+@@ -5270,7 +5268,9 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+ 	 * Warning: If activation failed after point of no return, it returns error
+ 	 * as 0 and pretends the call succeeded.
+ 	 */
++	printf("sirius: execve activate enter\n");
+ 	error = exec_activate_image(imgp);
++	printf("sirius: execve activate %d\n", error);
+ 	/* thread and task ref returned for vfexec case */
+ 
+ 	if (imgp->ip_new_thread != NULL) {
+@@ -8076,7 +8076,9 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
  	 */
  	size_t path_length = strlen(path) + 1;
  	argv0 = scratch_addr;
@@ -12,7 +72,7 @@ index 4308896..bf47271 100644
  	if (error) {
  		return error;
  	}
-@@ -8096,6 +8098,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+@@ -8100,6 +8102,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
  		scratch_addr = USER_ADDR_ALIGN(scratch_addr + init_args_length, sizeof(user_addr_t));
  	}
  
@@ -20,7 +80,7 @@ index 4308896..bf47271 100644
  	if (proc_is64bit(p)) {
  		user64_addr_t argv64bit[3] = {};
  
-@@ -8133,9 +8136,13 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
+@@ -8137,9 +8140,13 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path,
  	 * The access to the cred is safe:
  	 * the proc isn't running yet, it's stable.
  	 */
