@@ -44,7 +44,7 @@ ABL (boot 分区 = 我们重编的 U-Boot boot.img)
 | 存储（eMMC） | ✅ | SDCC1；SHNGROOT 窗口（OS/SystemOS）发布为块设备；整盘 0x747BFDF 扇区；GPT 由 IOStorageFamily 解析 |
 | 根文件系统 | ✅ | APFS 挂载 OS 卷 `disk2s1`；`bsd_init` 完整跑完；sealed-root 答案记录后继续 |
 | init / launchd | ✅ | `execve` 全链路通过（`cloneproc`→`proc locks`→`activate`→`namei 0`），`execve activate 0` |
-| 信任链 | 🔶 | 原始 bundle（`7416ca4f…`，两个未改动模块）已打进 payload；启动期初始化已补回，待上机确认 AMFI 是否据此放行 |
+| 信任链 | ✅ | 原始 bundle（`7416ca4f…`，两个未改动模块）打进 payload，启动期初始化已补回；上机确认 AMFI 直接放行（`execve activate 0`，且 `exec policy answered` 不再出现），`sirius-skip-cs` 已从 boot args 移除 |
 | 用户态 | ⏳ | exec 成功后驱动不再收到请求，剩余等待在存储栈之外 |
 | 时钟 | 🔶 | 400 kHz → 25 MHz 已上机验证（`EMMC clock25=ok`）；50 MHz 需 CMD6 高速模式 |
 
@@ -189,8 +189,8 @@ fastboot.exe reboot
 
 ## 5. 下一步路线（按优先级）
 
-1. **确认信任链生效**：启动后看是否出现 AMFI 加载 bundle 的迹象，以及 `execve` 是否在**没有**
-   `sirius-skip-cs=1` 的情况下也能 `activate 0`。确认后把该 boot arg 从 `board.toml` 去掉。
+1. **信任链回归**：换 IPSW 时要重新生成 bundle 并更新 `board.toml [payload] trust_cache_sha256`；
+   `sirius-skip-exec-policy.patch` 保留但不再启用，作为退路。
 2. **exec 之后的停顿**：`execve activate 0` 之后驱动没有在途传输、读请求也不再增长，
    说明等待发生在存储栈之外。下一步在调用侧（`bsd_init` 之后、launchd 入口）加检查点，
    而不是继续改传输路径。
