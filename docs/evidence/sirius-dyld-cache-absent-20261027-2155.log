@@ -1,0 +1,14 @@
+636678:sirius: sr exists 0xbb0ddbbd90dd77d5 kr 1
+644705:sirius: path /System/Library/Caches/com.apple.dyld/ -> 2
+644706:sirius: path /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 2
+644707:sirius: path /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e -> 2
+644788:sirius: path /System/Cryptexes/OS/ -> 2
+644789:sirius: path /usr/lib/dyld -> 0
+644790:sirius: path /sbin/launchd -> 0
+647119:sirius: sr exists 0xbb0ddbbd90dd77d5 kr 1
+15625:sirius: init write 2025; root:libignition-56~62436/
+15628:sirius: init write libignition_core/RELEASE_ARM64 
+15635:sirius: init write libignition: 1: arguments       
+15641:sirius: init write libignition: 1:   ignition level
+15643:sirius: init write libignition: 1:   force dylib ro
+15645:sirius: init write libignition: 1:   halt after sta
