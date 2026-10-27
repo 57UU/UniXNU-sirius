@@ -15,7 +15,7 @@
 #include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
-#include <kern/thread_call.h>
+#include <kern/sched_prim.h>
 
 extern "C" {
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
@@ -211,13 +211,10 @@ struct NemmcRequest {
 	NemmcRequest *next;
 };
 
-/* A thread_call has a single pending slot: thread_call_enter1() does not queue a second call, it
- * overwrites tc_param1 (osfmk/kern/thread_call.c). Passing the request itself there loses the one
- * already waiting - its completion never fires, IOBlockStorageDriver waits forever, and the caller
- * that was reading (an execve of launchd, say) hangs with the kernel otherwise idle. Requests
- * therefore live on this list and the thread call only wakes the drain, so a coalesced enter still
- * services every request. The pool is fixed because doAsyncReadWrite must not allocate (IOMalloc
- * with Z_WAITOK can sleep). */
+/* Requests live on this queue and one worker thread drains it. Handing a request straight to a
+ * thread call lost it whenever a call was already pending (a thread_call has a single slot and
+ * thread_call_enter1 overwrites its parameter), and running the drain in interrupt context blocked
+ * the queue outright once anything in it slept. */
 static const unsigned NemmcRequestPoolSize = 32;
 static NemmcRequest nemmc_pool[NemmcRequestPoolSize];
 static NemmcRequest *nemmc_free_list;
@@ -226,7 +223,11 @@ static NemmcRequest *nemmc_pending_tail;
 static volatile uint32_t nemmc_queue_busy;
 static uint8_t *nemmc_bounce;
 
-static thread_call_t nemmc_completion_call;
+/* A dedicated kernel thread drains the queue. The thread call this used to run on is dispatched
+ * in interrupt context: the completion, IOMemoryDescriptor::writeBytes() and the transfer itself
+ * may block there, and a blocked interrupt thread simply stops servicing the queue - which looked
+ * exactly like a hang (requests and block count frozen, no error, heartbeats still running). */
+static thread_t nemmc_worker;
 
 static void
 nemmc_queue_lock(void)
@@ -243,10 +244,8 @@ nemmc_queue_unlock(void)
 }
 
 static void
-nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
+nemmc_drain_queue(void)
 {
-	(void)param0;
-	(void)param1;
 	for (;;) {
 		nemmc_queue_lock();
 		NemmcRequest *request = nemmc_pending_head;
@@ -258,7 +257,7 @@ nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
 		}
 		nemmc_queue_unlock();
 		if (request == nullptr) {
-			break;
+			return;
 		}
 		IOReturn result = kIOReturnSuccess;
 		for (UInt64 i = 0; i < request->count; i++) {
@@ -283,6 +282,29 @@ nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
 		request->next = nemmc_free_list;
 		nemmc_free_list = request;
 		nemmc_queue_unlock();
+	}
+}
+
+static void
+nemmc_worker_thread(void *, wait_result_t)
+{
+	for (;;) {
+		nemmc_queue_lock();
+		bool empty = nemmc_pending_head == nullptr;
+		nemmc_queue_unlock();
+		if (empty) {
+			assert_wait((event_t)&nemmc_worker, THREAD_UNINT);
+			nemmc_queue_lock();
+			empty = nemmc_pending_head == nullptr;
+			nemmc_queue_unlock();
+			if (empty) {
+				thread_block(THREAD_CONTINUE_NULL);
+			} else {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+			}
+			continue;
+		}
+		nemmc_drain_queue();
 	}
 }
 
@@ -463,7 +485,7 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 	nemmc_pending_tail = request;
 	nemmc_queue_unlock();
 
-	thread_call_enter1(nemmc_completion_call, nullptr);
+	thread_wakeup((event_t)&nemmc_worker);
 	return kIOReturnSuccess;
 }
 
@@ -736,12 +758,7 @@ sirius_native_emmc_probe(void)
 	if (device != nullptr) {
 		return;
 	}
-	if (nemmc_completion_call == nullptr) {
-		nemmc_completion_call = thread_call_allocate(nemmc_complete_request, nullptr);
-		if (nemmc_completion_call == nullptr) {
-			emmc_log("NativeEmmc: no completion call\n");
-			return;
-		}
+	if (nemmc_worker == nullptr) {
 		nemmc_bounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
 		if (nemmc_bounce == nullptr) {
 			emmc_log("NativeEmmc: no bounce buffer\n");
@@ -754,6 +771,13 @@ sirius_native_emmc_probe(void)
 		}
 		nemmc_pending_head = nullptr;
 		nemmc_pending_tail = nullptr;
+		thread_t worker = nullptr;
+		if (kernel_thread_start(nemmc_worker_thread, nullptr, &worker) != KERN_SUCCESS) {
+			emmc_log("NativeEmmc: no worker thread\n");
+			return;
+		}
+		nemmc_worker = worker;
+		thread_deallocate(worker);
 	}
 	emmc_log("NativeEmmc: step 0 enter\n");
 	NativeEmmc *candidate = new NativeEmmc;
