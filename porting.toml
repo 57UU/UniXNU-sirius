@@ -490,3 +490,45 @@ evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Entry probe, panic screen, panel rows and the evidence convention of the port." },
   { kind = "device", reference = "docs/evidence/sirius-usb-console-20261026-1605.log", command = "sudo python3 scripts/capture-usb-console.py --wait 60 --duration 190 --output /tmp/boot.log", revision = "366abe2948fdb0c1554f7e0b89b731160f4527a4", result = "3813 bytes of kernel log read from /dev/ttyACM0 over the DWC3 CDC console." },
 ]
+
+[[area]]
+id = "boot-chain"
+status = "implemented"
+components = []
+paths = [".gitmodules", "uboot/**", "efi/**"]
+inputs = [
+  "Boot chain: ABL -> U-Boot (boot partition) -> UEFI -> UniXNU.efi on the vendor partition -> DarwinBoot.efi -> XNU.",
+  "The U-Boot fork github.com/57UU/u-boot branch sirius/v2.0 carries the board support for sdm710-xiaomi-sirius and sirius-build.sh's ENV_FILE option; the UniXNU boot chain itself is environment text, not source.",
+  "The EDK II package that builds UniXNU.efi, the DXE drivers and DarwinBoot comes from the UniXNU framework's package/ directory.",
+]
+configuration = [
+  "uboot/src is a submodule of that fork at branch sirius/v2.0 (shallow), pinned to a2a847b1a84.",
+  "uboot/unixnu-sirius.env is the board's stock default environment plus unixnu_boot/unixnu_check, the bootmenu entry they need and the bootcmd chain; uboot/build.sh builds boot-unixnu.img from the submodule and that file.",
+  "efi/ is a vendored copy of the framework's package/ (UniXNUPkg, Scripts, build.sh) taken at f85b5a6, so the repository can build the whole chain on its own.",
+]
+procedure = [
+  "U-Boot: git submodule update --init --depth 1 uboot/src, then uboot/build.sh (needs CROSS_COMPILE and mkbootimg); fastboot flash boot uboot/boot-unixnu.img.",
+  "Payload: assemble the kernel, efi/ and the EDK II build output with scripts/make-uboot-payload.py --marker, then fastboot flash vendor.",
+  "Recovery: flash sirius-distro's build/boot.img, which ignores the marker and boots Linux.",
+]
+findings = [
+  "U-Boot needs no source change for this port: with the environment file above, bootcmd runs unixnu_check first and falls back to the Linux path when /EFI/UniXNU/BOOTUNIXNU is absent on p80.",
+  "mmc 0:50 is a hexadecimal partition number (0x50 = 80 = the vendor partition); 0:80 is read as 0x80 = 128 and fails with 'Invalid partition 128'.",
+  "bootflow scan cannot find p80: it stops after the first 30 partitions of each device, so the boot chain uses load/bootefi with the partition spelled out.",
+  "The UniXNU boot chain used to live only in an unversioned scratch directory (the environment file and boot-unixnu.img), so the boot image could not be rebuilt from any repository; both the file and the recipe are in uboot/ now.",
+]
+completion = [
+  "uboot/build.sh reproduces boot-unixnu.img from a fresh clone; with the marker in the payload U-Boot starts UniXNU.efi, and without it the phone boots Linux.",
+  "The payload volume holds UniXNU.efi, DarwinBoot.efi, kernel.macho, kernel.macho.trustcache and the marker.",
+]
+limits = [
+  "The EDK II package is a copy, not a submodule: keeping it in step with the framework is a manual diff of package/.",
+  "The U-Boot submodule is shallow and pinned by commit; rebasing onto a newer sirius/v2.0 is a deliberate update.",
+]
+next_action = [
+  "Build UniXNU.efi from efi/ once and compare it with the framework's output, so the vendored copy is known good rather than assumed.",
+]
+evidence = [
+  { kind = "source", reference = "uboot/README.md", result = "The build recipe, the four environment lines that add the UniXNU chain, and the two partition/short-scan traps." },
+  { kind = "source", reference = "efi/README.md", result = "Provenance of the vendored EDK II package (framework commit f85b5a6) and what the payload takes from it." },
+]
