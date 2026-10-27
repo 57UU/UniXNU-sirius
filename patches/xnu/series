@@ -12,3 +12,4 @@ sirius-exec-trace.patch
 sirius-lockrw-trace.patch
 sirius-cloneproc-trace.patch
 sirius-trust-cache-guard.patch
+sirius-skip-exec-policy.patch

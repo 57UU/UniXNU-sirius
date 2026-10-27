@@ -1,0 +1,28 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 910ae2a..01af95b 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8713,6 +8713,23 @@ process_signature(proc_t p, struct image_params *imgp)
+ 	 * which is unexpected but security framework does not
+ 	 * approve of exec, kill and return immediately.
+ 	 */
++	/* Bring-up instrument: the policy answer comes from AMFI, which asks a trust cache this port
++	 * does not have, so every image is refused and launchd is killed with
++	 * EXEC_EXIT_REASON_SECURITY_POLICY. With sirius-skip-cs=1 the answer is recorded and the image
++	 * is allowed to run; without it the kernel refuses exactly as before. */
++	unsigned sirius_skip_cs = 0;
++	PE_parse_boot_argn("sirius-skip-cs", &sirius_skip_cs, sizeof(sirius_skip_cs));
++	if (sirius_skip_cs != 0) {
++		if (imgp->ip_mac_return != 0) {
++			printf("sirius: exec policy answered %d, skipped by boot arg\n",
++			    imgp->ip_mac_return);
++			imgp->ip_mac_return = 0;
++		}
++		if (imgp->ip_cs_error != OS_REASON_NULL) {
++			printf("sirius: exec code signing error, skipped by boot arg\n");
++			imgp->ip_cs_error = OS_REASON_NULL;
++		}
++	}
+ 	if (imgp->ip_mac_return != 0) {
+ 		boot_progress_process_stage(proc_getpid(p),p->p_name,"exec MAC policy REFUSED");
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,

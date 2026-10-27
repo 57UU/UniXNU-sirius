@@ -108,6 +108,7 @@ kernel_args = [
   "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
   "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
+  "sirius-skip-cs=1",              # AMFI refuses every image without a trust cache; records and continues
   "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
                                     # patches/xnu/sirius-skip-rootauth.patch
   # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).

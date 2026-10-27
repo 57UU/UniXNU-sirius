@@ -1878,3 +1878,74 @@ sirius: init execve enter          ← 进入 execve
 启动一次，把屏幕上 `caller 0x...` 那些地址记下来（或拍屏），用未剥离内核
 （`tree/build/xnu/ios-obj/.../mach.development.bcm2837.unstripped.noctf`）反查符号，
 就能定位是谁在抢占计数为 0 的上下文里取了不可睡眠的 rw 锁。
+
+## eMMC 第十四阶段：exec 真正跑起来了，以及信任链（2026-10-27）
+
+### 这一阶段的决定性发现
+
+panic 文本镜像（心跳线程把 `boot_progress_panic_text` 写进 USB 环）终于抓到了那条一直在躲的 panic：
+
+```
+Taking non-sleepable RW lock with preemption enabled:
+  lock 0xfffffff007b3b548 caller 0xfffffff007758528 ... @lock_rw.c:1400
+```
+
+反查：`lock = _trust_cache_rt_lock`，`caller = _query_trust_cache+0x70`。
+
+即：它**不是 pmap 锁**，而是信任链运行时的锁。`trust_cache_rt_lock` 由 `trust_cache_runtime_init()`
+初始化（`lck_rw_init` → `can_sleep = true`）。这个板子的构建里那个 init 没被编译进去
+（defconfig 的 `CONFIG_XNU_TRUST_CACHE_RUNTIME` 没有传到 build script 的 `XNU_TRUST_CACHE_RUNTIME`），
+于是 AMFI 查询时拿到的是**全零的 lck_rw_t**（`can_sleep == false`）→ panic。
+
+修法：`sirius-trust-cache-guard.patch` 记录运行时是否初始化过，未初始化时 load/loadModule/query
+直接返回 `KERN_NOT_FOUND`，不碰锁。
+
+### 传输层：两次修复
+
+1. **丢失的完成**：thread_call 只有一个 pending 槽，`thread_call_enter1` 不重新入队、只覆盖
+   `tc_param1` → 已经排在里面的请求永久丢失，完成回调永不触发。改成软件队列 + 单次唤醒 drain。
+2. **中断上下文**：drain 仍跑在 thread_call（中断线程）里，`writeBytes`/完成回调可以在那里阻塞，
+   一旦阻塞整个队列停摆。改成**专用内核工作线程**（等待事件 → drain）。
+
+修完后 `blocks` 计数持续增长（0x3fc → 0x84a → …），传输确实在前进。
+
+### exec 走到了哪里
+
+```
+sirius: init execve enter
+sirius: execve cloneproc enter / forkproc / create_child / done
+sirius: execve proc locks enter / done
+sirius: execve activate enter
+sirius: execve namei enter → namei 0            ← 路径查找成功
+（读入 launchd 约 1975 个块后停住，随后设备复位）
+```
+
+launchd 曾经被真正执行过，随后内核报告：
+
+```
+unexpected SIGKILL of launchd, reason -- namespace 9, code 8
+```
+
+`namespace 9 = OS_REASON_EXEC`，`code 8 = EXEC_EXIT_REASON_SECURITY_POLICY` —— **AMFI 的 exec 策略否决**。
+
+### 参考设备（sheng）是怎么过这一关的
+
+1. **正确路径**：`scripts/build-original-system-trust.py` 把 IPSW 里的 `StaticTrustCache` 与
+   `Cryptex1,SystemTrustCache` 两个模块**原样**打包成 `original-static-system.bundle`，然后
+   `unixnu build payload --trust-cache <bundle>`（board.toml `[payload] trust_cache_sha256` 白名单校验）。
+   这样 launchd 的 CDHash 本来就在信任链里，AMFI 会真正放行。
+2. **旁路**：框架的 `zzyc-owner-skip-launch-constraints.patch` 注释写明——**原版 AMFI 会忽略它自己的
+   `amfi_*` 启动参数**，所以要在 XNU 的 MAC 层清检查，由 boot arg 控制。
+
+本板已加 `sirius-skip-cs=1`（`sirius-skip-exec-policy.patch`：`exec_check_permissions` 里记录
+`ip_mac_return` / `ip_cs_error` 并继续）。尚未验证通过——这次卡在了读 launchd 的过程中。
+
+### 下一步（按顺序）
+
+1. **信任链正确路径**：下载 IPSW → `build-original-system-trust.py` 生成 bundle →
+   `payload.trust_cache` 白名单加入其 sha256 → `unixnu build payload --trust-cache`。
+2. **读入停滞**：exec 读到约 1975 块后不再前进。怀疑工作线程在
+   `IOMemoryDescriptor::writeBytes()` 或完成回调里阻塞（目标页可能触发缺页 → 又需要同一个 worker 的 I/O →
+   自锁）。对策：传输前先 `buffer->prepare()` 或 `map()` 强制驻留，或在 worker 里先 copy 到自备缓冲再写。
+3. **eMMC 时钟**：仍是 400 kHz（`EMMC clock=0007`），每块数十毫秒。userland 要可用必须升到
+   25/50 MHz（GCC SDCC1 RCG + CMD6 high-speed）。
