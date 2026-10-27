@@ -103,6 +103,7 @@ nemmc_transport_lock_release(void)
 }
 
 volatile uint32_t nemmc_reads;
+volatile uint32_t nemmc_blocks;
 static bool nemmc_panic_dumped;
 
 extern "C" char boot_progress_panic_text[2048];
@@ -127,6 +128,7 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		}
 		emmc_log_hex("NEMMC alive beats/reads ",
 		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
+		emmc_log_hex("NEMMC alive blocks ", nemmc_blocks);
 		nemmc_heartbeats++;
 		IOSleep(2000);
 	}
@@ -263,6 +265,7 @@ nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
 			nemmc_transport_lock_acquire();
 			int read = sirius_emmc_read_block(request->base + request->block + i, nemmc_bounce);
 			nemmc_transport_lock_release();
+			nemmc_blocks++;
 			if (read != 0) {
 				emmc_log_hex("NEMMC transfer failed lba ", request->base + request->block + i);
 				result = kIOReturnIOError;
@@ -358,11 +361,18 @@ OSDefineMetaClassAndStructors(NativeEmmcBlock, IOBlockStorageDevice);
 bool
 NativeEmmcBlock::init(UInt64 base, UInt64 blocks)
 {
+	/* One request is one run of single-block CMD17 reads at the card's current clock, which takes
+	 * tens of milliseconds per block; without this limit IOStorageFamily hands over a whole
+	 * megabyte at once and the drain is busy with it for minutes. */
 	emmc_log("NativeEmmc: step 7b block base init\n");
 	if (!IOBlockStorageDevice::init(nullptr)) {
 		return false;
 	}
 	emmc_log("NativeEmmc: step 7c block base init done\n");
+	/* One request is one run of single-block CMD17 reads at the card's current clock, tens of
+	 * milliseconds per block; without this cap IOStorageFamily hands over a whole megabyte at
+	 * once and the drain is busy with that single request for minutes. */
+	setProperty("IOMaximumBlockCountRead", 64, 64);
 	fBase = base;
 	fBlocks = blocks;
 	fLock = IOLockAlloc();
