@@ -104,6 +104,12 @@ nemmc_transport_lock_release(void)
 
 volatile uint32_t nemmc_reads;
 volatile uint32_t nemmc_blocks;
+/* What the driver is doing right now: the heartbeat prints it once a transfer has been in flight
+ * for more than a beat, which separates "stuck inside a transfer" from "the caller never asked
+ * again" without guessing. */
+volatile uint64_t nemmc_inflight_lba;
+volatile uint32_t nemmc_inflight_count;
+volatile uint32_t nemmc_inflight_beat;
 static bool nemmc_panic_dumped;
 
 extern "C" char boot_progress_panic_text[2048];
@@ -129,6 +135,12 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		emmc_log_hex("NEMMC alive beats/reads ",
 		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
 		emmc_log_hex("NEMMC alive blocks ", nemmc_blocks);
+		uint64_t inflight = nemmc_inflight_lba;
+		if (inflight != 0 && nemmc_heartbeats - nemmc_inflight_beat > 1) {
+			emmc_log_hex("NEMMC inflight lba ", inflight);
+			emmc_log_dec("NEMMC inflight count ", nemmc_inflight_count);
+			emmc_log_dec("NEMMC inflight beats ", nemmc_heartbeats - nemmc_inflight_beat);
+		}
 		nemmc_heartbeats++;
 		IOSleep(2000);
 	}
@@ -262,6 +274,9 @@ nemmc_drain_queue(void)
 		IOReturn result = kIOReturnSuccess;
 		for (UInt64 i = 0; i < request->count; i++) {
 			nemmc_transport_lock_acquire();
+			nemmc_inflight_lba = request->base + request->block + i;
+			nemmc_inflight_count = (uint32_t)request->count;
+			nemmc_inflight_beat = nemmc_heartbeats;
 			int read = sirius_emmc_read_block(request->base + request->block + i, nemmc_bounce);
 			nemmc_transport_lock_release();
 			nemmc_blocks++;
@@ -276,6 +291,8 @@ nemmc_drain_queue(void)
 				break;
 			}
 		}
+		nemmc_inflight_lba = 0;
+		nemmc_inflight_count = 0;
 		request->completion.action(request->completion.target, request->completion.parameter,
 		    result, result == kIOReturnSuccess ? request->count * EMMC_BLOCK_SIZE : 0);
 		nemmc_queue_lock();
