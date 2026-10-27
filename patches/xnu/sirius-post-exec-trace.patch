@@ -157,7 +157,7 @@ diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
  	if (timerisset(&p->p_vtimer_user.it_value)) {
  		uint32_t        microsecs;
  
-@@ -3410,6 +3423,14 @@
+@@ -3410,6 +3423,42 @@
  	if (!bsd_init_done) {
  		bsd_init_done = 1;
  		bsdinit_task();
@@ -168,6 +168,34 @@ diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
 +
 +			printf("sirius: init exec done, arming user fault probe\n");
 +			sirius_user_probe_armed = 1;
++		}
++		/*
++		 * sirius: where the dyld shared cache would be, from inside the exec'd process's own
++		 * root. dyld stops at the empty shared region before it opens anything, so the kernel
++		 * has to say whether the cache is on the mounted volume at all - the cryptex volume
++		 * of iPadOS 17 is the other candidate, and it is published as a second window.
++		 */
++		{
++			static const char *const paths[] = {
++				"/System/Library/Caches/com.apple.dyld/",
++				"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++				"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
++				"/System/Cryptexes/OS/",
++				"/usr/lib/dyld",
++				"/sbin/launchd",
++			};
++			vfs_context_t ctx = vfs_context_current();
++			unsigned int i;
++
++			for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
++				vnode_t vp = NULL;
++				int err = vnode_lookup(paths[i], 0, &vp, ctx);
++
++				printf("sirius: path %s -> %d\n", paths[i], err);
++				if (err == 0) {
++					vnode_put(vp);
++				}
++			}
 +		}
  	}
  }
