@@ -1,14 +1,14 @@
 diff --git a/bsd/kern/kern_trustcache.c b/bsd/kern/kern_trustcache.c
-index 038e044..cba55df 100644
+index 038e044..8a23a3c 100644
 --- a/bsd/kern/kern_trustcache.c
 +++ b/bsd/kern/kern_trustcache.c
 @@ -440,6 +440,17 @@ ppl_check_trust_cache_runtime_for_uuid(
  LCK_GRP_DECLARE(trust_cache_lck_grp, "trust_cache_lck_grp");
  decl_lck_rw_data(, trust_cache_rt_lock);
  
-+/* Set once trust_cache_runtime_init() has run. Some board builds compile the runtime out while the
-+ * AMFI kext still calls these entry points; without the guard such a call takes a zeroed lck_rw_t
-+ * (lck_rw_can_sleep == false) and panics in lck_rw_lock_shared at lock_rw.c:1400. */
++/* Set once trust_cache_runtime_init() has run (sirius-trust-cache-init.patch puts the call back
++ * for this board). Guarding the entry points keeps a build that leaves the runtime out from taking
++ * a zeroed lck_rw_t, whose can_sleep bit reads false and panics in lck_rw_lock_shared. */
 +static bool trust_cache_rt_ready;
 +
 +static bool

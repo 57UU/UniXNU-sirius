@@ -87,6 +87,10 @@ windows = [
 ]
 
 [payload]
+# The two unchanged original trust-cache modules (StaticTrustCache and Cryptex1,SystemTrustCache)
+# bundled byte for byte by UniXNU/scripts/build-original-system-trust.py. With it AMFI can trust the
+# Apple-signed OS binaries instead of every exec being refused.
+trust_cache_sha256 = ["7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7"]
 volume = "SIRIUSESP"
 size_mib = 256
 loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]] Payloads/DarwinBoot.efi
@@ -105,6 +109,7 @@ kernel_args = [
   "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
   "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
   "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
+  "sirius_emmc_hs=1",              # 25 MHz card clock instead of the 400 kHz identification rate
   "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
   "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root

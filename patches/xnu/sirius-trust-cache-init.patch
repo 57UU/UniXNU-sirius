@@ -1,0 +1,21 @@
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index 0a9f261..92c2df6 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -759,6 +759,16 @@ kernel_bootstrap_thread(void)
+ 
+ 	/* Load the static and engineering trust caches */
+ 	load_static_trust_cache();
++#elif !defined(XNU_NATIVE_TRUST_CACHE) || !XNU_NATIVE_TRUST_CACHE
++	/* Board bring-up: the ARM64/BCM2837 profile compiles the block above out unless the build
++	 * passes XNU_NATIVE_TRUST_CACHE, and this board's build does not. The runtime has to exist
++	 * before the trust-cache storage becomes read-only (kernel_startup_initialize_upto below), so
++	 * put the call back here rather than initialising lazily later, which faults in the static
++	 * region; the AMFI kext then loads the original bundle from the payload and trusts the OS
++	 * binaries instead of every exec being refused. */
++	kernel_bootstrap_log("trust_cache_init");
++	trust_cache_runtime_init();
++	load_static_trust_cache();
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);

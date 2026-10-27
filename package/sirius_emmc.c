@@ -23,6 +23,11 @@ typedef _Bool bool;
 #define false 0
 
 extern vm_offset_t ml_io_map(vm_offset_t phys, unsigned long size);
+/* osfmk/pexpert: reads a boot argument value; the C++ side includes pexpert.h, this file does not. */
+extern int PE_parse_boot_argn(const char *arg_string, void *arg_ptr, unsigned int max_len);
+/* Defined further down with the rest of the ADMA2 read path; the clock switch above uses it to
+ * prove the new rate before anything depends on it. */
+static int sdhci_read_block_adma2(uint32_t lba, uint8_t *out);
 /* A spinning delay on purpose: delay() sleeps, and while the CPU is idle the GCC auto clock gating
  * turns the SDCC AHB clock off, after which every register reads back zero and no command ever
  * completes. */
@@ -370,6 +375,58 @@ emmc_set_card_clock_400k(void)
 	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_CBCR) = gcc_read(GCC_SDCC1_APPS_CBCR) | 1u;
 	spin_us(100);
 	return (gcc_read(GCC_SDCC1_APPS_CMD) & 1u) == 0 ? 0 : -1;
+}
+
+/* 25 MHz for the card clock, taken from the same table U-Boot uses for this SoC
+ * (drivers/clk/qcom/clock-sdm670.c: F(25000000, CFG_CLK_SRC_GPLL0_EVEN, 6, 1, 2)). The RCG divider
+ * field holds (div * 2 - 1) and DUAL_EDGE is set when n != m, so the 400 kHz entry the probe
+ * already writes (CXO, div 12, m 1, n 4) is CFG 0x2017 and this one is CFG 0x260B. 25 MHz is still
+ * inside the default-speed range, so it needs no CMD6 switch; 50 MHz would.
+ *
+ * Returns 0 when a sector read still returns the GPT signature afterwards. */
+static int
+emmc_set_card_clock_25m(void)
+{
+	if (gcc_base == 0) {
+		return -1;
+	}
+	uint16_t before = sdhci_read16(SDHCI_CLOCK_CONTROL);
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_CMD) = 0;      /* root disabled while editing */
+	spin_us(10);
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_CFG) = 0x260bu;  /* src GPLL0_EVEN, div 6, DUAL_EDGE */
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_M) = 1u;
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_N) = 0xfeu;
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_D) = 0xfeu;
+	spin_us(10);
+	*(volatile uint32_t *)(gcc_base + GCC_SDCC1_APPS_CMD) = 1u;     /* update */
+	for (unsigned waited = 0; waited < 100000; waited += 100) {
+		if ((gcc_read(GCC_SDCC1_APPS_CMD) & 1u) == 0) {
+			break;
+		}
+		spin_us(100);
+	}
+	/* Restart the controller clock on the new base: internal clock, wait for stable, card clock. */
+	sdhci_write16(SDHCI_CLOCK_CONTROL, 0);
+	spin_us(100);
+	sdhci_write16(SDHCI_CLOCK_CONTROL, SDHCI_CLK_INTERNAL_EN);
+	for (unsigned waited = 0; waited < 100000; waited += 100) {
+		if ((sdhci_read16(SDHCI_CLOCK_CONTROL) & SDHCI_CLK_INTERNAL_STABLE) != 0) {
+			break;
+		}
+		spin_us(100);
+	}
+	sdhci_write16(SDHCI_CLOCK_CONTROL, SDHCI_CLK_INTERNAL_EN | SDHCI_CLK_SD_EN);
+	spin_us(1000);
+
+	/* Prove it with the GPT signature before anybody depends on it. */
+	uint8_t probe[512];
+	if (sdhci_read_block_adma2(1, probe) != 0 || probe[0] != 'E' || probe[1] != 'F' ||
+	    probe[2] != 'I' || probe[3] != ' ' || probe[4] != 'P' || probe[5] != 'A' ||
+	    probe[6] != 'R' || probe[7] != 'T') {
+		sdhci_write16(SDHCI_CLOCK_CONTROL, (uint16_t)(before & 0xff00u));
+		return -1;
+	}
+	return 0;
 }
 
 /* The boot chain leaves SDCC1 clocked, but the branches get gated again once it goes idle: the
@@ -1036,6 +1093,18 @@ sirius_emmc_probe(void)
 	}
 	ring_puts("EMMC read=");
 	ring_puts(read_ok == 0 ? "ok" : "fail");
+	/* Optional: leave the identification clock for 25 MHz (the U-Boot table's entry for this SoC),
+	 * so the root mount and the launchd exec do not crawl at 400 kHz. Off unless asked, and it
+	 * keeps 400 kHz if the GPT signature does not read back afterwards. */
+	if (read_ok == 0) {
+		unsigned hs = 0;
+		if (PE_parse_boot_argn("sirius_emmc_hs", &hs, sizeof(hs)) && hs != 0) {
+			int fast = emmc_set_card_clock_25m();
+			ring_puts("EMMC clock25=");
+			ring_puts(fast == 0 ? "ok" : "fallback");
+			ring_puts("\r\n");
+		}
+	}
 	ring_puts(" sig=");
 	for (unsigned i = 0; i < 8; i++) {
 		sirius_usb_log_char((sector[i] >= 0x20 && sector[i] < 0x7f) ? (char)sector[i] : '.');

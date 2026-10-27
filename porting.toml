@@ -197,6 +197,8 @@ findings = [
   "Completing a block request from another thread deadlocks this stack the same way the drop did (reads and blocks frozen at the same point, no error, the drain asleep), so doAsyncReadWrite completes inline by default.",
   "The recurring 'Taking non-sleepable RW lock with preemption enabled' panic is the trust cache runtime lock, not a pmap lock: lock 0xfffffff007b3b548 resolves to _trust_cache_rt_lock and the first caller to _query_trust_cache+0x70. trust_cache_runtime_init() is not compiled into this build, so the lock word reads all zeros (lck_rw_can_sleep == false) and lck_rw_lock_shared panics at lock_rw.c:1400; the driver's heartbeat now mirrors the panic text into the USB ring, which is how the addresses were read.",
   "With the runtime guarded to answer KERN_NOT_FOUND, AMFI refuses every image and the kernel kills launchd with namespace 9 (OS_REASON_EXEC) code 8 (EXEC_EXIT_REASON_SECURITY_POLICY); recording and clearing that answer with sirius-skip-cs=1 makes exec_activate_image return 0, so execve of /sbin/launchd completes.",
+  "The card clock can be raised from the identification rate with the same table U-Boot programs: the RCG divider field holds (div * 2 - 1) and DUAL_EDGE is set when n != m, so the 400 kHz entry (CXO, div 12, m 1, n 4) is CFG 0x2017 and 25 MHz (GPLL0_EVEN, div 6, m 1, n 2) is CFG 0x260B; 25 MHz stays inside default speed, 50 MHz would need the CMD6 high-speed switch.",
+  "The 25 MHz switch reads the GPT signature back at the new rate on device (the probe prints EMMC clock25=ok), so the RCG encoding above is confirmed rather than assumed.",
   "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
 ]
 completion = [
@@ -209,6 +211,7 @@ limits = [
   "The exec policy answer still comes from a boot argument (sirius-skip-cs=1) because the board has no trust cache; the original trust-cache bundle is not wired into the payload yet.",
 ]
 next_action = [
+  "Verify the 25 MHz switch (sirius_emmc_hs=1) reads the GPT signature back and measure the new block rate; then decide whether the CMD6 high-speed switch to 50 MHz is worth it.",
   "Build the original trust-cache bundle (scripts/build-original-system-trust.py) and pass it with build payload --trust-cache, so AMFI trusts the OS binaries and sirius-skip-cs=1 can be dropped.",
   "Find what the kernel waits on after execve returns 0: the driver is idle there, so instrument the caller side rather than the transfer path.",
   "Raise the SDCC1 clock out of identification speed (GCC root clock plus the card's high-speed mode).",
