@@ -1,0 +1,111 @@
+NEMMC pan implemented 1
+NEMMC sctlr_el1 000000003454593d
+NEMMC mmfr1_el1 0000000010212122
+NEMMC pan before 0
+NEMMC alive beats/reads 0000000000000000
+NEMMC probe user thread starts 0
+NEMMC probe user faults 0
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 0
+NEMMC probe init faults 0
+NEMMC alive beats/reads 0000000100000092
+NEMMC probe user thread starts 0
+NEMMC probe user faults 0
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 0
+NEMMC probe init faults 0
+SIRIUS user thread start tid 0000000000000194
+SIRIUS user thread start pc 0000000000000000
+NEMMC alive beats/reads 00000002000000f8
+NEMMC probe user thread starts 1
+NEMMC probe user faults 0
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 1
+NEMMC probe init faults 619712
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 0000000096000045
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 000000009600004f
+SIRIUS fault far 0000000000001000
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS env group 1
+SIRIUS env esr 0000000096000045
+SIRIUS env far 0000000000001000
+SIRIUS env pc fffffff00741faa4
+SIRIUS env ttbr0 00000000a43f2800
+SIRIUS env ttep 00000000a43f2800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env sctlr 000000003454593d
+SIRIUS env mmfr1 0000000010212122
+SIRIUS env pmap fffffff36e9ae6a0
+SIRIUS env group 1
+SIRIUS env esr 000000009600004f
+SIRIUS env far 0000000000001000
+SIRIUS env pc fffffff00741faa4
+SIRIUS env ttbr0 00000000a43f2800
+SIRIUS env ttep 00000000a43f2800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env sctlr 000000003454593d
+SIRIUS env mmfr1 0000000010212122
+SIRIUS env pmap fffffff36e9ae6a0
+SIRIUS env group 1
+SIRIUS env esr 000000009600004f
+SIRIUS env far 0000000000001000
+SIRIUS env pc fffffff00741faa4
+SIRIUS env ttbr0 00000000a43f2800
+SIRIUS env ttep 00000000a43f2800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env sctlr 000000003454593d
+SIRIUS env mmfr1 0000000010212122
+SIRIUS env pmap fffffff36e9ae6a0
+SIRIUS env group 1
+SIRIUS env esr 000000009600004f
+SIRIUS env far 0000000000001000
+SIRIUS env pc fffffff00741faa4
+SIRIUS env ttbr0 00000000a43f2800
+SIRIUS env ttep 00000000a43f2800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env sctlr 000000003454593d
+SIRIUS env mmfr1 0000000010212122
+SIRIUS env pmap fffffff36e9ae6a0
