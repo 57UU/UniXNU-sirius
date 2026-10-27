@@ -1,0 +1,49 @@
+diff --git a/osfmk/kern/lock_rw.c b/osfmk/kern/lock_rw.c
+index d101e71..b4615b5 100644
+--- a/osfmk/kern/lock_rw.c
++++ b/osfmk/kern/lock_rw.c
+@@ -1124,7 +1124,7 @@ lck_rw_lock_exclusive_check_contended(
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("Taking non-sleepable RW lock with preemption enabled: lock %p caller %p %p %p", lock, __builtin_return_address(0), __builtin_return_address(1), __builtin_return_address(2));
+ 	}
+ 
+ 	if (LCK_RW_LOCK_EXCLUSIVE_TAS(lock)) {
+@@ -1158,7 +1158,7 @@ lck_rw_lock_exclusive_internal_inline(
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("Taking non-sleepable RW lock with preemption enabled: lock %p caller %p %p %p", lock, __builtin_return_address(0), __builtin_return_address(1), __builtin_return_address(2));
+ 	}
+ 
+ 	if (LCK_RW_LOCK_EXCLUSIVE_TAS(lock)) {
+@@ -1397,7 +1397,7 @@ lck_rw_lock_shared_internal_inline(
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("Taking non-sleepable RW lock with preemption enabled: lock %p caller %p %p %p", lock, __builtin_return_address(0), __builtin_return_address(1), __builtin_return_address(2));
+ 	}
+ 
+ 	for (;;) {
+@@ -1944,7 +1944,7 @@ lck_rw_try_lock_shared_internal_inline(
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("Taking non-sleepable RW lock with preemption enabled: lock %p caller %p %p %p", lock, __builtin_return_address(0), __builtin_return_address(1), __builtin_return_address(2));
+ 	}
+ 
+ #if     CONFIG_DTRACE
+@@ -2018,7 +2018,7 @@ lck_rw_try_lock_exclusive_internal_inline(
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("Taking non-sleepable RW lock with preemption enabled: lock %p caller %p %p %p", lock, __builtin_return_address(0), __builtin_return_address(1), __builtin_return_address(2));
+ 	}
+ 
+ 	assertf(lock->lck_rw_owner == 0, "state=0x%x, owner=%p",

@@ -9,3 +9,4 @@ sirius-usb-console.patch
 sirius-skip-rootauth.patch
 sirius-console-ring.patch
 sirius-exec-trace.patch
+sirius-lockrw-trace.patch
