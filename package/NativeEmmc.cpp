@@ -128,12 +128,14 @@ volatile int sirius_init_syscall_returns;  /* ... and returned from */
 volatile int sirius_init_asts;             /* bsd_ast runs for pid 1 */
 volatile int sirius_user_thread_starts;    /* returns to user from a freshly made thread */
 thread_t sirius_launchd_thread;            /* the thread the init exec starts */
+thread_t sirius_init_thread;               /* the pid 1 thread that ran bsd_ast */
 
 /* struct thread is private to the files compiled with MACH_KERNEL_PRIVATE, so the fields this
  * driver wants are read by two small accessors in osfmk/arm64/sleh.c. */
 unsigned int sirius_thread_state(thread_t thread);
 unsigned long long sirius_thread_wait_event(thread_t thread);
 unsigned long long sirius_thread_user_pc(thread_t thread);
+unsigned long long sirius_thread_kstack_word(thread_t thread, unsigned int index);
 
 /* Called from thread_bootstrap_return, i.e. once per new user thread, before its first return
  * to user. Two lines mean the exec'd thread started; one means it never did. */
@@ -147,6 +149,23 @@ sirius_user_thread_probe(void)
 		    sirius_thread_user_pc(current_thread()));
 	}
 }
+}
+
+static unsigned int nemmc_stack_dumps;
+
+static void
+nemmc_dump_init_stack(void)
+{
+	thread_t thread = sirius_init_thread;
+
+	nemmc_stack_dumps++;
+	emmc_log_hex("SIRIUS init thread ", (uint64_t)(uintptr_t)thread);
+	emmc_log_hex("SIRIUS init state/wait ",
+	    ((uint64_t)sirius_thread_state(thread) << 40) |
+	    (sirius_thread_wait_event(thread) & 0xffffffffffULL));
+	for (unsigned int i = 0; i < 96; i++) {
+		emmc_log_hex("SIRIUS stack ", sirius_thread_kstack_word(thread, i));
+	}
 }
 
 static void
@@ -179,6 +198,13 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 			emmc_log_hex("NEMMC launchd state/wait ",
 			    ((uint64_t)sirius_thread_state(sirius_launchd_thread) << 40) |
 			    (sirius_thread_wait_event(sirius_launchd_thread) & 0xffffffffffULL));
+		}
+		/* The boot stops inside load_init_program_at_path: report where the pid 1 thread sits,
+		 * a few times, by dumping the top of its kernel stack. The values are kernel text
+		 * addresses, so the call chain can be symbolized against kernel.macho afterwards. */
+		if (sirius_init_thread != nullptr && nemmc_stack_dumps < 3 &&
+		    nemmc_heartbeats >= 20 + (uint32_t)nemmc_stack_dumps * 5) {
+			nemmc_dump_init_stack();
 		}
 		uint64_t inflight = nemmc_inflight_lba;
 		if (inflight != 0 && nemmc_heartbeats - nemmc_inflight_beat > 1) {

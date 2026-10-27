@@ -37,7 +37,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  	if (__improbable(ESR_INSTR_IS_2BYTES(esr))) {
  		/*
  		 * We no longer support 32-bit, which means no 2-byte
-@@ -2398,3 +2414,31 @@
+@@ -2398,3 +2414,44 @@
  SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
  
  #endif
@@ -62,6 +62,19 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +
 +/* The address the thread's next return to user will jump to, i.e. the entry point the exec
 + * installed. Zero before the thread has a user context. */
++/* One word of the thread's kernel stack, counted down from its top. The blocked call chain of
++ * a thread that never comes back is readable this way without a debugger attached. */
++unsigned long long
++sirius_thread_kstack_word(thread_t thread, unsigned int index)
++{
++	vm_offset_t *top = (vm_offset_t *)thread->machine.kstackptr;
++
++	if (top == NULL) {
++		return 0;
++	}
++	return (unsigned long long)top[-1 - (int)index];
++}
++
 +unsigned long long
 +sirius_thread_user_pc(thread_t thread)
 +{
@@ -109,23 +122,27 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
 diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
 --- a/bsd/kern/kern_sig.c
 +++ b/bsd/kern/kern_sig.c
-@@ -3313,6 +3313,15 @@
+@@ -3313,6 +3313,19 @@
  		return;
  	}
  
 +	{
 +		extern volatile int sirius_init_asts;
++		extern thread_t sirius_init_thread;
 +
-+		if (p->p_pid == 1 && sirius_init_asts < 8) {
-+			sirius_init_asts++;
-+			printf("sirius: bsd_ast pid 1 tid %lld\n", thread_tid(thread));
++		if (p->p_pid == 1) {
++			sirius_init_thread = thread;
++			if (sirius_init_asts < 8) {
++				sirius_init_asts++;
++				printf("sirius: bsd_ast pid 1 tid %lld\n", thread_tid(thread));
++			}
 +		}
 +	}
 +
  	if (timerisset(&p->p_vtimer_user.it_value)) {
  		uint32_t        microsecs;
  
-@@ -3410,6 +3419,14 @@
+@@ -3410,6 +3423,14 @@
  	if (!bsd_init_done) {
  		bsd_init_done = 1;
  		bsdinit_task();
@@ -170,3 +187,14 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  			/* wake up the new exec thread */
  			task_clear_return_wait(get_threadtask(imgp->ip_new_thread), clearwait_flags);
  			thread_deallocate(imgp->ip_new_thread);
+@@ -8199,6 +8212,10 @@
+ 	mach_vm_size_t map_page_size = vm_map_page_size(map);
+ 
+ 	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
++	/* sirius: the exec writes argv and the path into this page inside the init map; a bad address
++	 * would fault in copyout, so it is worth seeing. */
++	printf("sirius: init scratch %p page %llu\n", (void *)(uintptr_t)scratch_addr,
++	    (unsigned long long)map_page_size);
+ 	user_addr_t init_envp = USER_ADDR_NULL;
+ #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
+ 	boot_progress_stage("SystemOS mount enter");
