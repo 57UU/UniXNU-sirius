@@ -190,43 +190,81 @@ struct NemmcRequest {
 	UInt64 block;
 	UInt64 count;
 	IOStorageCompletion completion;
+	NemmcRequest *next;
 };
+
+/* A thread_call has a single pending slot: thread_call_enter1() does not queue a second call, it
+ * overwrites tc_param1 (osfmk/kern/thread_call.c). Passing the request itself there loses the one
+ * already waiting - its completion never fires, IOBlockStorageDriver waits forever, and the caller
+ * that was reading (an execve of launchd, say) hangs with the kernel otherwise idle. Requests
+ * therefore live on this list and the thread call only wakes the drain, so a coalesced enter still
+ * services every request. The pool is fixed because doAsyncReadWrite must not allocate (IOMalloc
+ * with Z_WAITOK can sleep). */
+static const unsigned NemmcRequestPoolSize = 32;
+static NemmcRequest nemmc_pool[NemmcRequestPoolSize];
+static NemmcRequest *nemmc_free_list;
+static NemmcRequest *nemmc_pending_head;
+static NemmcRequest *nemmc_pending_tail;
+static volatile uint32_t nemmc_queue_busy;
+static uint8_t *nemmc_bounce;
 
 static thread_call_t nemmc_completion_call;
 
 static void
+nemmc_queue_lock(void)
+{
+	while (__atomic_exchange_n(&nemmc_queue_busy, 1, __ATOMIC_ACQ_REL) != 0) {
+		IODelay(20);
+	}
+}
+
+static void
+nemmc_queue_unlock(void)
+{
+	__atomic_store_n(&nemmc_queue_busy, 0, __ATOMIC_RELEASE);
+}
+
+static void
 nemmc_complete_request(thread_call_param_t param0, thread_call_param_t param1)
 {
-	/* XNU passes param0 from thread_call_allocate and param1 from thread_call_enter1,
-	 * so the request travels as param1. */
 	(void)param0;
-	NemmcRequest *request = (NemmcRequest *)param1;
-	IOReturn result = kIOReturnSuccess;
-	uint8_t *bounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
-	if (bounce == nullptr) {
-		result = kIOReturnNoMemory;
-	}
-	for (UInt64 i = 0; result == kIOReturnSuccess && i < request->count; i++) {
-		nemmc_transport_lock_acquire();
-		int read = sirius_emmc_read_block(request->base + request->block + i, bounce);
-		nemmc_transport_lock_release();
-		if (read != 0) {
-			emmc_log_hex("NEMMC transfer failed lba ", request->base + request->block + i);
-			result = kIOReturnIOError;
+	(void)param1;
+	for (;;) {
+		nemmc_queue_lock();
+		NemmcRequest *request = nemmc_pending_head;
+		if (request != nullptr) {
+			nemmc_pending_head = request->next;
+			if (nemmc_pending_head == nullptr) {
+				nemmc_pending_tail = nullptr;
+			}
+		}
+		nemmc_queue_unlock();
+		if (request == nullptr) {
 			break;
 		}
-		if (bounce != nullptr &&
-		    request->buffer->writeBytes(i * EMMC_BLOCK_SIZE, bounce, EMMC_BLOCK_SIZE) !=
-		    EMMC_BLOCK_SIZE) {
-			result = kIOReturnIOError;
+		IOReturn result = kIOReturnSuccess;
+		for (UInt64 i = 0; i < request->count; i++) {
+			nemmc_transport_lock_acquire();
+			int read = sirius_emmc_read_block(request->base + request->block + i, nemmc_bounce);
+			nemmc_transport_lock_release();
+			if (read != 0) {
+				emmc_log_hex("NEMMC transfer failed lba ", request->base + request->block + i);
+				result = kIOReturnIOError;
+				break;
+			}
+			if (request->buffer->writeBytes(i * EMMC_BLOCK_SIZE, nemmc_bounce,
+			    EMMC_BLOCK_SIZE) != EMMC_BLOCK_SIZE) {
+				result = kIOReturnIOError;
+				break;
+			}
 		}
+		request->completion.action(request->completion.target, request->completion.parameter,
+		    result, result == kIOReturnSuccess ? request->count * EMMC_BLOCK_SIZE : 0);
+		nemmc_queue_lock();
+		request->next = nemmc_free_list;
+		nemmc_free_list = request;
+		nemmc_queue_unlock();
 	}
-	if (bounce != nullptr) {
-		IOFree(bounce, EMMC_BLOCK_SIZE);
-	}
-	request->completion.action(request->completion.target, request->completion.parameter, result,
-	    result == kIOReturnSuccess ? request->count * EMMC_BLOCK_SIZE : 0);
-	IOFree(request, sizeof(NemmcRequest));
 }
 
 class NativeEmmcBlock : public IOBlockStorageDevice
@@ -373,16 +411,33 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		emmc_log_hex("NEMMC read block ", block);
 		emmc_log_hex("NEMMC read count ", count);
 	}
-	NemmcRequest *request = (NemmcRequest *)IOMalloc(sizeof(NemmcRequest));
+	nemmc_queue_lock();
+	NemmcRequest *request = nemmc_free_list;
+	if (request != nullptr) {
+		nemmc_free_list = request->next;
+	}
+	nemmc_queue_unlock();
 	if (request == nullptr) {
-		return kIOReturnNoMemory;
+		emmc_log("NEMMC refuse: request pool empty\n");
+		return kIOReturnNoResources;
 	}
 	request->buffer = buffer;
 	request->base = fBase;
 	request->block = block;
 	request->count = count;
 	request->completion = *completion;
-	thread_call_enter1(nemmc_completion_call, request);
+	request->next = nullptr;
+
+	nemmc_queue_lock();
+	if (nemmc_pending_tail != nullptr) {
+		nemmc_pending_tail->next = request;
+	} else {
+		nemmc_pending_head = request;
+	}
+	nemmc_pending_tail = request;
+	nemmc_queue_unlock();
+
+	thread_call_enter1(nemmc_completion_call, nullptr);
 	return kIOReturnSuccess;
 }
 
@@ -424,9 +479,14 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 		emmc_log("NEMMC manifest: no userdata window\n");
 		return 0;
 	}
+	/* These reads share the single staging buffer with every block device, so they take the
+	 * transport lock like the request path does. */
 	for (unsigned block = 0; block < MANIFEST_BYTES / EMMC_BLOCK_SIZE; block++) {
-		if (sirius_emmc_read_block(USERDATA_FIRST_LBA + block,
-		    manifest + block * EMMC_BLOCK_SIZE) != 0) {
+		nemmc_transport_lock_acquire();
+		int read = sirius_emmc_read_block(USERDATA_FIRST_LBA + block,
+		    manifest + block * EMMC_BLOCK_SIZE);
+		nemmc_transport_lock_release();
+		if (read != 0) {
 			emmc_log("NEMMC manifest read failed\n");
 			return 0;
 		}
@@ -656,6 +716,18 @@ sirius_native_emmc_probe(void)
 			emmc_log("NativeEmmc: no completion call\n");
 			return;
 		}
+		nemmc_bounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
+		if (nemmc_bounce == nullptr) {
+			emmc_log("NativeEmmc: no bounce buffer\n");
+			return;
+		}
+		nemmc_free_list = nullptr;
+		for (unsigned i = NemmcRequestPoolSize; i > 0; i--) {
+			nemmc_pool[i - 1].next = nemmc_free_list;
+			nemmc_free_list = &nemmc_pool[i - 1];
+		}
+		nemmc_pending_head = nullptr;
+		nemmc_pending_tail = nullptr;
 	}
 	emmc_log("NativeEmmc: step 0 enter\n");
 	NativeEmmc *candidate = new NativeEmmc;
