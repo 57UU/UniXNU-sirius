@@ -47,7 +47,14 @@ CONFIG_XNU_ARMVIRT_PLATFORM=n
 # start.s (0x40000040 + cpu*4, the Raspberry Pi local peripherals). That address does not exist
 # on SDM710 and the store aborts before the MMU is on, which looks like a hang right after the
 # entry probe's blue bar with no magenta bar.
-CONFIG_XNU_NATIVE_PAN=n
+# SDM710 is ARMv8.2 and reports ID_AA64MMFR1_EL1.PAN = 0b0010: PAN plus FEAT_PAN2, which sets
+# PSTATE.PAN on every exception entry to EL1 whatever SCTLR_EL1.SPAN says. With the PAN support
+# compiled out nothing ever clears it, so every kernel access to a user page takes a permission
+# fault (ESR 0x9600004f, DFSC 0x0f) on a mapping that AT S1E1W resolves, and copyio retries until
+# the boot stops. Measured on the phone: SPSR_EL1.PAN = 1 and TTBR0_EL1 already equal to the pmap
+# root at the __bcopyout fault. The native PAN build brackets the copyio with
+# user_access_enable()/disable() instead, which is what the arch profile and the other phones use.
+CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_SOURCE_MOCKFS=n
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=n

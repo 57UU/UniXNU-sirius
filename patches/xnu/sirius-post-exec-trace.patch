@@ -1,3 +1,119 @@
+diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -102,6 +102,17 @@
+ 
+ 	code = arm_get_syscall_number(state);
+ 
++	/* sirius: pid 1 is the only userland process, so its first syscalls say how far the
++	 * launchd image gets after the exec returned, and which call it never comes back from. */
++	{
++		extern volatile int sirius_init_syscalls;
++
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscalls < 24) {
++			sirius_init_syscalls++;
++			printf("sirius: init syscall %u enter\n", (unsigned)code);
++		}
++	}
++
+ #define unix_syscall_kprintf(x...)      /* kprintf("unix_syscall: " x) */
+ 
+ 	if (kdebug_enable && !code_is_kdebug_trace(code)) {
+@@ -181,6 +192,15 @@
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
+ 
++	{
++		extern volatile int sirius_init_syscall_returns;
++
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 24) {
++			sirius_init_syscall_returns++;
++			printf("sirius: init syscall %u return %d\n", (unsigned)code, error);
++		}
++	}
++
+ #if CONFIG_MACF
+ skip_syscall:
+ #endif /* CONFIG_MACF */
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -4956,6 +4956,12 @@
+ 
+ 	/* Check if the current thread is not aborted due to SIGKILL */
+ 	thread_active = thread_is_active(old_thread);
++	/*
++	 * sirius: with any of these false the switch is skipped and the exec is swallowed, which
++	 * would leave the launchd thread never scheduled while execve still returns 0.
++	 */
++	printf("sirius: exec switch proc_active %d task_active %d thread_active %d\n",
++	    (int)proc_active, (int)task_active, (int)thread_active);
+ 
+ 	/*
+ 	 * Do not switch the proc if the new task or proc is already terminated
+@@ -5466,6 +5472,13 @@
+ 			if (!exec_done && error != 0) {
+ 				clearwait_flags |= TCRW_CLEAR_EXEC_COMPLETE;
+ 			}
++			/* sirius: keep the thread the exec starts so the heartbeat can report whether it
++			 * ever ran, and in which state it sits (see NativeEmmc.cpp). */
++			if (exec_done) {
++				extern thread_t sirius_launchd_thread;
++
++				sirius_launchd_thread = imgp->ip_new_thread;
++			}
+ 			/* wake up the new exec thread */
+ 			task_clear_return_wait(get_threadtask(imgp->ip_new_thread), clearwait_flags);
+ 			thread_deallocate(imgp->ip_new_thread);
+@@ -8199,6 +8212,10 @@
+ 	mach_vm_size_t map_page_size = vm_map_page_size(map);
+ 
+ 	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
++	/* sirius: the exec writes argv and the path into this page inside the init map; a bad address
++	 * would fault in copyout, so it is worth seeing. */
++	printf("sirius: init scratch %p page %llu\n", (void *)(uintptr_t)scratch_addr,
++	    (unsigned long long)map_page_size);
+ 	user_addr_t init_envp = USER_ADDR_NULL;
+ #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
+ 	boot_progress_stage("SystemOS mount enter");
+diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -3313,6 +3313,19 @@
+ 		return;
+ 	}
+ 
++	{
++		extern volatile int sirius_init_asts;
++		extern thread_t sirius_init_thread;
++
++		if (p->p_pid == 1) {
++			sirius_init_thread = thread;
++			if (sirius_init_asts < 8) {
++				sirius_init_asts++;
++				printf("sirius: bsd_ast pid 1 tid %lld\n", thread_tid(thread));
++			}
++		}
++	}
++
+ 	if (timerisset(&p->p_vtimer_user.it_value)) {
+ 		uint32_t        microsecs;
+ 
+@@ -3410,6 +3423,14 @@
+ 	if (!bsd_init_done) {
+ 		bsd_init_done = 1;
+ 		bsdinit_task();
++
++		/* The exec returned, so any user fault from here on belongs to the launchd image. */
++		{
++			extern volatile int sirius_user_probe_armed;
++
++			printf("sirius: init exec done, arming user fault probe\n");
++			sirius_user_probe_armed = 1;
++		}
+ 	}
+ }
+ 
 diff --git a/osfmk/arm64/locore.s b/osfmk/arm64/locore.s
 --- a/osfmk/arm64/locore.s
 +++ b/osfmk/arm64/locore.s
@@ -22,7 +138,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  
  #include <sys/errno.h>
  #include <sys/kdebug.h>
-@@ -687,6 +688,35 @@
+@@ -687,6 +688,76 @@
  		    esr, VM_KERNEL_ADDRHIDE(far), VM_KERNEL_UNSLIDE(get_saved_state_pc(state)), 0, 0);
  	}
  
@@ -36,16 +152,18 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +		extern volatile unsigned long long sirius_fault_log[8][5];
 +		extern volatile int sirius_fault_log_count;
 +		extern thread_t sirius_init_thread;
++		extern thread_t sirius_launchd_thread;
++		thread_t fault_thread = current_thread();
++		boolean_t traced = (sirius_init_thread != THREAD_NULL) &&
++		    (fault_thread == sirius_init_thread || fault_thread == sirius_launchd_thread);
 +		int slot = sirius_fault_log_count;
 +
-+		if (sirius_init_thread != THREAD_NULL &&
-+		    current_thread() == sirius_init_thread) {
++		if (traced && fault_thread == sirius_init_thread) {
 +			extern volatile unsigned long long sirius_fault_total;
 +
 +			sirius_fault_total++;
 +		}
-+		if (slot < 8 && sirius_init_thread != THREAD_NULL &&
-+		    current_thread() == sirius_init_thread) {
++		if (slot < 8 && traced) {
 +			sirius_fault_log[slot][0] = (unsigned long long)(unsigned int)class;
 +			sirius_fault_log[slot][1] = esr;
 +			sirius_fault_log[slot][2] = far;
@@ -53,12 +171,51 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +			sirius_fault_log[slot][4] = is_user ? 1 : 0;
 +			sirius_fault_log_count = slot + 1;
 +		}
++		/*
++		 * sirius: the environment of the first faults of the exec thread and of the thread
++		 * the exec hands launchd to. Every question this build has to answer is one field
++		 * here: which page table the CPU walks (TTBR0_EL1 against the pmap's own root), what
++		 * the faulting access was (esr), and whether PAN was set for it (spsr). User and
++		 * kernel faults go into separate groups so the copyout fault loop cannot hide the
++		 * handful of launchd fetch faults, or the other way round.
++		 */
++		if (traced) {
++			extern volatile unsigned long long sirius_env_log[12][10];
++			extern volatile int sirius_env_user_count;
++			extern volatile int sirius_env_kern_count;
++			int used = is_user ? sirius_env_user_count : sirius_env_kern_count;
++			int limit = is_user ? 8 : 4;
++			pmap_t env_pmap = (fault_thread->map != VM_MAP_NULL) ?
++			    fault_thread->map->pmap : PMAP_NULL;
++
++			if (used >= 0 && used < limit) {
++				int env = (is_user ? 0 : 8) + used;
++
++				sirius_env_log[env][0] = esr;
++				sirius_env_log[env][1] = far;
++				sirius_env_log[env][2] = get_saved_state_pc(state);
++				sirius_env_log[env][3] = __builtin_arm_rsr("TTBR0_EL1");
++				sirius_env_log[env][4] =
++				    env_pmap != PMAP_NULL ? (unsigned long long)env_pmap->ttep : 0;
++				sirius_env_log[env][5] =
++				    env_pmap != PMAP_NULL ? (unsigned long long)env_pmap->hw_asid : 0;
++				sirius_env_log[env][6] = __builtin_arm_rsr("SPSR_EL1");
++				sirius_env_log[env][7] = __builtin_arm_rsr("SCTLR_EL1");
++				sirius_env_log[env][8] = __builtin_arm_rsr("ID_AA64MMFR1_EL1");
++				sirius_env_log[env][9] = (unsigned long long)(uintptr_t)env_pmap;
++				if (is_user) {
++					sirius_env_user_count = used + 1;
++				} else {
++					sirius_env_kern_count = used + 1;
++				}
++			}
++		}
 +	}
 +
  	if (__improbable(ESR_INSTR_IS_2BYTES(esr))) {
  		/*
  		 * We no longer support 32-bit, which means no 2-byte
-@@ -1778,6 +1808,22 @@
+@@ -1778,6 +1849,34 @@
  		vm_map_t      map;
  		int           interruptible;
  
@@ -78,10 +235,22 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +			}
 +		}
 +
++		/*
++		 * sirius: PAN is the fault, and it is a build-time fact, not a runtime one. SDM710
++		 * reports ID_AA64MMFR1_EL1.PAN = 0b0010 (PAN + FEAT_PAN2), so the PE sets PSTATE.PAN
++		 * on every exception entry to EL1 no matter what SCTLR_EL1.SPAN says; the recorded
++		 * SPSR_EL1 of this fault has bit 22 set. A kernel built with CONFIG_XNU_NATIVE_PAN=n
++		 * never clears it, so every EL1 access to a user page raises a permission fault on a
++		 * mapping that AT S1E1W reports as valid. Clearing it here cannot help: the exception
++		 * return of the recovery path restores SPSR_EL1 and sets PAN again. The fix is the
++		 * native PAN build, which brackets the copyio with user_access_enable()/disable().
++		 * The values stay recorded so the next boot can show them with PAN handled.
++		 */
++
  		/*
  		 * Ensure no faults in the physical aperture. This could happen if
  		 * a page table is incorrectly allocated from the read only region
-@@ -1848,9 +1894,48 @@
+@@ -1848,9 +1947,48 @@
  			result = vm_fault(map, fault_addr, fault_type,
  			    /* change_wiring */ FALSE, VM_KERN_MEMORY_NONE, interruptible,
  			    /* caller_pmap */ NULL, /* caller_pmap_addr */ 0);
@@ -130,7 +299,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  			return;
  		}
  
-@@ -2398,3 +2483,44 @@
+@@ -2398,3 +2536,44 @@
  SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
  
  #endif
@@ -175,119 +344,3 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +
 +	return state == NULL ? 0 : (unsigned long long)get_saved_state_pc(state);
 +}
-diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
---- a/bsd/dev/arm/systemcalls.c
-+++ b/bsd/dev/arm/systemcalls.c
-@@ -102,6 +102,17 @@
- 
- 	code = arm_get_syscall_number(state);
- 
-+	/* sirius: pid 1 is the only userland process, so its first syscalls say how far the
-+	 * launchd image gets after the exec returned, and which call it never comes back from. */
-+	{
-+		extern volatile int sirius_init_syscalls;
-+
-+		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscalls < 24) {
-+			sirius_init_syscalls++;
-+			printf("sirius: init syscall %u enter\n", (unsigned)code);
-+		}
-+	}
-+
- #define unix_syscall_kprintf(x...)      /* kprintf("unix_syscall: " x) */
- 
- 	if (kdebug_enable && !code_is_kdebug_trace(code)) {
-@@ -181,6 +192,15 @@
- 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
- 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
- 
-+	{
-+		extern volatile int sirius_init_syscall_returns;
-+
-+		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 24) {
-+			sirius_init_syscall_returns++;
-+			printf("sirius: init syscall %u return %d\n", (unsigned)code, error);
-+		}
-+	}
-+
- #if CONFIG_MACF
- skip_syscall:
- #endif /* CONFIG_MACF */
-diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
---- a/bsd/kern/kern_sig.c
-+++ b/bsd/kern/kern_sig.c
-@@ -3313,6 +3313,19 @@
- 		return;
- 	}
- 
-+	{
-+		extern volatile int sirius_init_asts;
-+		extern thread_t sirius_init_thread;
-+
-+		if (p->p_pid == 1) {
-+			sirius_init_thread = thread;
-+			if (sirius_init_asts < 8) {
-+				sirius_init_asts++;
-+				printf("sirius: bsd_ast pid 1 tid %lld\n", thread_tid(thread));
-+			}
-+		}
-+	}
-+
- 	if (timerisset(&p->p_vtimer_user.it_value)) {
- 		uint32_t        microsecs;
- 
-@@ -3410,6 +3423,14 @@
- 	if (!bsd_init_done) {
- 		bsd_init_done = 1;
- 		bsdinit_task();
-+
-+		/* The exec returned, so any user fault from here on belongs to the launchd image. */
-+		{
-+			extern volatile int sirius_user_probe_armed;
-+
-+			printf("sirius: init exec done, arming user fault probe\n");
-+			sirius_user_probe_armed = 1;
-+		}
- 	}
- }
- 
-diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
---- a/bsd/kern/kern_exec.c
-+++ b/bsd/kern/kern_exec.c
-@@ -4956,6 +4956,12 @@
- 
- 	/* Check if the current thread is not aborted due to SIGKILL */
- 	thread_active = thread_is_active(old_thread);
-+	/*
-+	 * sirius: with any of these false the switch is skipped and the exec is swallowed, which
-+	 * would leave the launchd thread never scheduled while execve still returns 0.
-+	 */
-+	printf("sirius: exec switch proc_active %d task_active %d thread_active %d\n",
-+	    (int)proc_active, (int)task_active, (int)thread_active);
- 
- 	/*
- 	 * Do not switch the proc if the new task or proc is already terminated
-@@ -5466,6 +5472,13 @@
- 			if (!exec_done && error != 0) {
- 				clearwait_flags |= TCRW_CLEAR_EXEC_COMPLETE;
- 			}
-+			/* sirius: keep the thread the exec starts so the heartbeat can report whether it
-+			 * ever ran, and in which state it sits (see NativeEmmc.cpp). */
-+			if (exec_done) {
-+				extern thread_t sirius_launchd_thread;
-+
-+				sirius_launchd_thread = imgp->ip_new_thread;
-+			}
- 			/* wake up the new exec thread */
- 			task_clear_return_wait(get_threadtask(imgp->ip_new_thread), clearwait_flags);
- 			thread_deallocate(imgp->ip_new_thread);
-@@ -8199,6 +8212,10 @@
- 	mach_vm_size_t map_page_size = vm_map_page_size(map);
- 
- 	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
-+	/* sirius: the exec writes argv and the path into this page inside the init map; a bad address
-+	 * would fault in copyout, so it is worth seeing. */
-+	printf("sirius: init scratch %p page %llu\n", (void *)(uintptr_t)scratch_addr,
-+	    (unsigned long long)map_page_size);
- 	user_addr_t init_envp = USER_ADDR_NULL;
- #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
- 	boot_progress_stage("SystemOS mount enter");

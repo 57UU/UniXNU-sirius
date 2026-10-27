@@ -131,6 +131,14 @@ volatile int sirius_fault_log_count;
 /* The environment of the last pid 1 fault: map, its pmap, the live TTBR0, the copyio recovery
  * entry, the fault address and its fault code. */
 volatile unsigned long long sirius_fault_extra[10];
+/* The environment of the first faults of the exec thread: 0-7 the EL0 faults (launchd running),
+ * 8-11 the EL1 faults on a user address (the copyout of the exec). Each record is
+ * esr, far, pc, TTBR0_EL1, pmap->ttep, pmap->hw_asid, SPSR_EL1, SCTLR_EL1,
+ * ID_AA64MMFR1_EL1, pmap. TTBR0 against ttep says whether the CPU walks the pmap the kernel
+ * writes; SPSR bit 22 says whether PAN was set for the faulting access. */
+volatile unsigned long long sirius_env_log[12][10];
+volatile int sirius_env_user_count;
+volatile int sirius_env_kern_count;
 volatile unsigned long long sirius_fault_total;
 volatile int sirius_init_syscalls;         /* syscalls entered by pid 1 */
 volatile int sirius_init_syscall_returns;  /* ... and returned from */
@@ -183,6 +191,8 @@ nemmc_report_pan(void)
 	uint64_t pan;
 
 	emmc_log_dec("NEMMC pan implemented ", (uint64_t)nemmc_pan_implemented());
+	emmc_log_hex("NEMMC sctlr_el1 ", (uint64_t)__builtin_arm_rsr("SCTLR_EL1"));
+	emmc_log_hex("NEMMC mmfr1_el1 ", (uint64_t)__builtin_arm_rsr("ID_AA64MMFR1_EL1"));
 	if (!nemmc_pan_implemented()) {
 		return;
 	}
@@ -213,6 +223,21 @@ nemmc_dump_init_stack(void)
 		if (word >= 0xfffffff007004000ULL && word < 0xfffffff010000000ULL) {
 			emmc_log_hex("SIRIUS pc ", word);
 		}
+	}
+}
+
+static void
+nemmc_log_env(int group, int index)
+{
+	static const char *const names[10] = {
+		"SIRIUS env esr ", "SIRIUS env far ", "SIRIUS env pc ", "SIRIUS env ttbr0 ",
+		"SIRIUS env ttep ", "SIRIUS env asid ", "SIRIUS env spsr ", "SIRIUS env sctlr ",
+		"SIRIUS env mmfr1 ", "SIRIUS env pmap ",
+	};
+
+	emmc_log_dec("SIRIUS env group ", (uint64_t)group);
+	for (int field = 0; field < 10; field++) {
+		emmc_log_hex(names[field], sirius_env_log[index][field]);
 	}
 }
 
@@ -264,6 +289,22 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 				emmc_log_hex("SIRIUS fault pc ", sirius_fault_log[reported][3]);
 				emmc_log_dec("SIRIUS fault user ", sirius_fault_log[reported][4]);
 				reported++;
+			}
+			/* The environment records: 0-7 are EL0 faults, 8-11 EL1 faults on a user
+			 * address. Read TTBR0 against ttep first: equal means the CPU walks the pmap
+			 * the kernel writes, and the fault is permission (PAN/TLB), not translation. */
+			{
+				static int env_user_reported;
+				static int env_kern_reported;
+
+				for (; env_user_reported < sirius_env_user_count && env_user_reported < 8;
+				    env_user_reported++) {
+					nemmc_log_env(0, env_user_reported);
+				}
+				for (; env_kern_reported < sirius_env_kern_count && env_kern_reported < 4;
+				    env_kern_reported++) {
+					nemmc_log_env(1, 8 + env_kern_reported);
+				}
 			}
 		}
 		if (sirius_launchd_thread != nullptr) {

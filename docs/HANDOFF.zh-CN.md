@@ -198,17 +198,19 @@ fastboot.exe reboot
 
 1. **信任链回归**：换 IPSW 时要重新生成 bundle 并更新 `board.toml [payload] trust_cache_sha256`；
    `sirius-skip-exec-policy.patch` 保留但不再启用，作为退路。
-2. **exec 之后的停顿（fault 循环，指向 pmap/地址空间不切换）**：探针显示两种表现，都发生在
-   "刚映射完的页 CPU 仍然访问不到"：i) `copyout()` 里 pid 1 线程连续取 fault（一分钟 6267 万次），
-   第一次 level-1 translation、之后全是 level-3 permission，而 `pmap_find_phys` 找得到页、
-   `AT S1E1W` 能翻译、`vm_fault` 返回 `KERN_SUCCESS`；ii) exec 成功后 launchd 线程的入口
-   `0x100924e50` 已经拿到（`SIRIUS user thread start pc`），但它在用户态做**取指**
-   时对 3 个地址反复拿 instruction abort（ESR 0x82000007，level-3 translation fault），
-   一秒钟几百万次，且**一条 syscall 都没发出、读请求冻结在 0x10D**。
-   两者的共同解释是：`vm_fault` 把页映射进 `thread->map` 的 pmap，而 CPU 的 TTBR0 仍指向
-   另一个 pmap（同一地址在 `AT S1E1W` 与 `pmap_find_phys` 上给出不同物理页，已经量到）。
-   下一步：在 exec 的 `proc_exec_switch_task` 之后确认/强制 pmap 切换（或对比
-   `TTBR0_EL1` 与 `thread->map->pmap` 的根表），这是当前最可能的根因。
+2. **exec 之后的停顿 = PAN（根因已定位）**：之前的两种表现——`copyout()` 里 pid 1 连续吃 fault
+   （一分钟 6267 万次，level-1 translation 之后全是 level-3 permission）、以及 exec 成功后
+   launchd 线程在用户态取指时反复 instruction abort——曾被读成"CPU 的 TTBR0 没切到新 pmap"。
+   新的环境探针推翻了这一点：故障时 **`TTBR0_EL1` 与 `pmap->ttep` 相等**（都是 `0xa43f2800`），
+   `pmap_find_phys` 找得到页、`AT S1E1W` 也能翻译，说明缺的不是映射也不是根表。
+   真正的差别在：故障时的 **`SPSR_EL1 = 0x20400204`，第 22 位（PAN）为 1**；
+   `ID_AA64MMFR1_EL1 = 0x10212122`，PAN 字段 `0b0010` 表示 **FEAT_PAN2**——它会在**每次进入 EL1 的
+   异常入口**上把 PSTATE.PAN 置 1，与 `SCTLR_EL1.SPAN`（实测 `0x3454593d`，bit 23 为 0）无关。
+   而本板 defconfig 把架构 profile 默认的 `CONFIG_XNU_NATIVE_PAN=y` 覆盖成了 `n`，于是
+   `copyio.c` 的 `user_access_enable()/disable()` 被编掉，内核再也清不掉 PAN：此后**任何**对用户页的
+   内核访问都吃 permission fault（ESR `0x9600004f`），`AT` 不受 PAN 约束所以看起来"是好的"。
+   在 fault handler 里清 PAN 无效——恢复路径走异常返回，`SPSR_EL1` 又把 PAN 置回 1（实测 93 万次/秒
+   的循环照旧）。修复就是恢复 `CONFIG_XNU_NATIVE_PAN=y`。
    附带：这几轮 payload 曾漏掉 `--trust-cache`，AMFI 因此以 namespace 9/code 8 杀掉 launchd
    （`no external trust caches found`）；带信任链重刷后 exec 正常走到
    `init execve returned 0` + `execve activate 0`，AMFI 不再报 `exec policy`。
