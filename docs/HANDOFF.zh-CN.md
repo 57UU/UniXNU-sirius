@@ -198,7 +198,7 @@ fastboot.exe reboot
 
 1. **信任链回归**：换 IPSW 时要重新生成 bundle 并更新 `board.toml [payload] trust_cache_sha256`；
    `sirius-skip-exec-policy.patch` 保留但不再启用，作为退路。
-2. **exec 之后的停顿 = PAN（根因已定位）**：之前的两种表现——`copyout()` 里 pid 1 连续吃 fault
+2. **exec 之后的停顿 = PAN（已修好并上机验证）**：之前的两种表现——`copyout()` 里 pid 1 连续吃 fault
    （一分钟 6267 万次，level-1 translation 之后全是 level-3 permission）、以及 exec 成功后
    launchd 线程在用户态取指时反复 instruction abort——曾被读成"CPU 的 TTBR0 没切到新 pmap"。
    新的环境探针推翻了这一点：故障时 **`TTBR0_EL1` 与 `pmap->ttep` 相等**（都是 `0xa43f2800`），
@@ -211,6 +211,14 @@ fastboot.exe reboot
    内核访问都吃 permission fault（ESR `0x9600004f`），`AT` 不受 PAN 约束所以看起来"是好的"。
    在 fault handler 里清 PAN 无效——恢复路径走异常返回，`SPSR_EL1` 又把 PAN 置回 1（实测 93 万次/秒
    的循环照旧）。修复就是恢复 `CONFIG_XNU_NATIVE_PAN=y`。
+   第一次 PAN=y 的启动反而 panic 在 `context switch with PAN disabled @pcb,ct175`——那是**本驱动的
+   PAN 报告**自己把 PAN 清掉了（日志 `NEMMC pan before 4194304` / `pan after 0`），而 PAN 构建要求
+   内核态始终置位；报告已改成只读。附带证据：PAN=n 的构建里从内核线程读回 0，也是被这段清掉的
+   结果，这正是最早"PAN 不是原因"误判的来源。
+   **修复后的实测**（内核 `3a34007b`）：`init path copyout 0` → `init argv enter` → `init token enter`
+   → `init execve enter` → `execve activate 0` → `init execve returned 0` → `init exec done`，
+   launchd 线程入口 `0x1005dee50`，pid 1 的 fault 从 9222 万降到 **120**，并**进入 24 条 syscall**
+   （getpid / proc_info / shared_region_check_np …）。这是本板第一次跑到用户态。
    附带：这几轮 payload 曾漏掉 `--trust-cache`，AMFI 因此以 namespace 9/code 8 杀掉 launchd
    （`no external trust caches found`）；带信任链重刷后 exec 正常走到
    `init execve returned 0` + `execve activate 0`，AMFI 不再报 `exec policy`。
@@ -224,7 +232,15 @@ fastboot.exe reboot
    `fastboot_partition_alias_<name>_a=<name>` 兜住。
 4. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需要在 `emmc_set_card_clock_25m` 之后加 CMD6
    （SWITCH，`HS_TIMING=1`），失败要能退回 25 MHz。
-5. **用户态后续**：data seed（`--data-ramdisk`）、`unique_chip_id`、dyld 缓存读取量、显示与触摸。
+5. **用户态：下一个卡点是 shared region（dyld 共享缓存）**。launchd 现在能跑，但
+   `shared_region_check_np` 走到 `vm_shared_region_start_address()` 就失败（返回 12 = ENOMEM，
+   每几秒重试一次），而那期间 **eMMC 读计数停在 `0x113` 不动** → 说明不是文件读失败，是
+   shared region 根本还没建立（dyld 想先拿到它的起始地址）。参考 fuxi-mouse233 记录里的
+   v41（`SYS_shared_region_map_and_slide_2_np` 返回 0、stage=10）来对齐这一步：先找
+   本 port 里应该在第一次 `shared_region_check_np` 之前调用
+   `shared_region_map_and_slide_2_np` 的路径，以及 root/payload 里 dyld 共享缓存应该从哪来
+   （`/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e`、SystemOS 还是 payload）。
+   之后才是 data seed（`--data-ramdisk`）、`unique_chip_id`、显示与触摸。
 
 ## 6. 环境清单
 

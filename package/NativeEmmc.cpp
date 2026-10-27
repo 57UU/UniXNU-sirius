@@ -170,12 +170,12 @@ sirius_user_thread_probe(void)
 
 static unsigned int nemmc_stack_dumps;
 
-/* PSTATE.PAN is set on every exception entry when SCTLR_EL1.SPAN is set, and a set PAN makes
- * every privileged access to a user page fault. This kernel is built with CONFIG_XNU_NATIVE_PAN=n,
- * so copyio.c's user_access_enable()/disable() are empty and nothing would ever clear it, which
- * turns the first kernel write into the init process's map into a fault that the fast fault path
- * resolves and immediately takes again. Clear it once, guarded by the feature check: on cores
- * without PAN the instruction is undefined. */
+/* SDM710 reports FEAT_PAN2 (ID_AA64MMFR1_EL1.PAN = 0b0010), so the PE sets PSTATE.PAN on every
+ * exception entry to EL1 whatever SCTLR_EL1.SPAN says. The kernel must therefore be built with
+ * CONFIG_XNU_NATIVE_PAN=y: copyio.c's user_access_enable()/disable() are what clear and restore it.
+ * This driver only measures it. It must not clear it: with the native PAN build a cleared PAN is a
+ * panic ("context switch with PAN disabled", pcb.c), which is exactly what the earlier build did
+ * here. */
 static int
 nemmc_pan_implemented(void)
 {
@@ -188,21 +188,15 @@ nemmc_pan_implemented(void)
 static void
 nemmc_report_pan(void)
 {
-	uint64_t pan;
-
 	emmc_log_dec("NEMMC pan implemented ", (uint64_t)nemmc_pan_implemented());
 	emmc_log_hex("NEMMC sctlr_el1 ", (uint64_t)__builtin_arm_rsr("SCTLR_EL1"));
 	emmc_log_hex("NEMMC mmfr1_el1 ", (uint64_t)__builtin_arm_rsr("ID_AA64MMFR1_EL1"));
 	if (!nemmc_pan_implemented()) {
 		return;
 	}
-	/* PSTATE.PAN as a system register (S3_0_C4_C2_3): clang's named form does not accept it. */
-	pan = (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3");
-	emmc_log_dec("NEMMC pan before ", pan);
-	if (pan != 0) {
-		__builtin_arm_wsr("S3_0_C4_C2_3", 0);
-		emmc_log_dec("NEMMC pan after ", (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3"));
-	}
+	/* PSTATE.PAN as a system register (S3_0_C4_C2_3): clang's named form does not accept it.
+	 * The bit comes back in its PSTATE position (1 << 22). */
+	emmc_log_dec("NEMMC pan now ", (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3"));
 }
 
 static void
