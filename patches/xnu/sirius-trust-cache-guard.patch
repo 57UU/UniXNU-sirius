@@ -1,0 +1,74 @@
+diff --git a/bsd/kern/kern_trustcache.c b/bsd/kern/kern_trustcache.c
+index 038e044..cba55df 100644
+--- a/bsd/kern/kern_trustcache.c
++++ b/bsd/kern/kern_trustcache.c
+@@ -440,6 +440,17 @@ ppl_check_trust_cache_runtime_for_uuid(
+ LCK_GRP_DECLARE(trust_cache_lck_grp, "trust_cache_lck_grp");
+ decl_lck_rw_data(, trust_cache_rt_lock);
+ 
++/* Set once trust_cache_runtime_init() has run. Some board builds compile the runtime out while the
++ * AMFI kext still calls these entry points; without the guard such a call takes a zeroed lck_rw_t
++ * (lck_rw_can_sleep == false) and panics in lck_rw_lock_shared at lock_rw.c:1400. */
++static bool trust_cache_rt_ready;
++
++static bool
++trust_cache_runtime_ready(void)
++{
++	return trust_cache_rt_ready;
++}
++
+ /* Immutable part of the runtime */
+ SECURITY_READ_ONLY_LATE(TrustCacheRuntime_t) trust_cache_rt_storage;
+ SECURITY_READ_ONLY_LATE(TrustCacheRuntime_t*) trust_cache_rt = &trust_cache_rt_storage;
+@@ -489,6 +500,7 @@ trust_cache_runtime_init(void)
+ 
+ 	/* Initialize the read-write lock */
+ 	lck_rw_init(&trust_cache_rt_lock, &trust_cache_lck_grp, 0);
++	trust_cache_rt_ready = true;
+ }
+ 
+ static kern_return_t
+@@ -525,6 +537,10 @@ xnu_load_trust_cache(
+ 	/* Exclusively lock the runtime */
+ 	lck_rw_lock_exclusive(&trust_cache_rt_lock);
+ 
++	if (!trust_cache_runtime_ready()) {
++		return KERN_NOT_FOUND;
++	}
++
+ 	TCReturn_t tc_ret = amfi->TrustCache.load(
+ 		trust_cache_rt,
+ 		type,
+@@ -577,6 +593,10 @@ xnu_load_legacy_trust_cache(
+ 	/* Exclusively lock the runtime */
+ 	lck_rw_lock_exclusive(&trust_cache_rt_lock);
+ 
++	if (!trust_cache_runtime_ready()) {
++		return KERN_NOT_FOUND;
++	}
++
+ 	TCReturn_t tc_ret = amfi->TrustCache.loadModule(
+ 		trust_cache_rt,
+ 		kTCTypeLegacy,
+@@ -624,6 +644,10 @@ xnu_query_trust_cache(
+ 		return KERN_INVALID_ARGUMENT;
+ 	}
+ 
++	if (!trust_cache_runtime_ready()) {
++		return KERN_NOT_FOUND;
++	}
++
+ 	/* Lock the runtime as shared */
+ 	lck_rw_lock_shared(&trust_cache_rt_lock);
+ 
+@@ -661,6 +685,10 @@ xnu_check_trust_cache_runtime_for_uuid(
+ 		return KERN_NOT_SUPPORTED;
+ 	}
+ 
++	if (!trust_cache_runtime_ready()) {
++		return KERN_NOT_FOUND;
++	}
++
+ 	/* Lock the runtime as shared */
+ 	lck_rw_lock_shared(&trust_cache_rt_lock);
+ 
