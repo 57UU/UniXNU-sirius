@@ -27,18 +27,19 @@ CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 # scripts/build-sirius-probes.py keeps the link closed (package/LegacyDisplayProbe.cpp).
 CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sirius-probes/libSiriusProbes.a"
 CONFIG_XNU_NATIVE_UFS=n
-CONFIG_XNU_NATIVE_AES=n
+CONFIG_XNU_NATIVE_AES=y
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
 CONFIG_XNU_NATIVE_RAM_BLOCK=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
 CONFIG_XNU_ARMVIRT_PLATFORM=n
 
-# Profile settings turned off on purpose. The ARM64 profile enables the native AES accelerator
-# and PAN support, and the iPadOS profile enables the mockfs provider, the trust-cache runtime
-# and the CS hash cache. The first-console image has none of them; re-enable each one together
-# with the stage that needs it (storage/root for mockfs and the trust cache, native AES for the
-# storage path) and record the result in porting.toml.
+# Profile settings turned off on purpose, except the native AES accelerator: the Image4
+# ignition sysctl (security.mac.img4.ignition_blob) the userland calls waits without a timeout
+# for an IOAESAccelerator, and SDM710 has none; the SoftwareAES personality publishes one in
+# software so libignition gets its blob instead of parking in waitForMatchingService. The other
+# profile settings stay off until the stage needs them (storage/root for mockfs and the trust
+# cache) and are recorded in porting.toml.
 #
 # Do NOT set CONFIG_XNU_NATIVE_ARCH_TIMER=n here. build-xnu-4k-baseline.sh derives it from
 # XNU_ARMCPU when the variable is absent, and the ARM64 profile leaves it on:

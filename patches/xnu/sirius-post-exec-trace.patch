@@ -10,7 +10,7 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
 +	{
 +		extern volatile int sirius_init_syscalls;
 +
-+		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscalls < 24) {
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscalls < 256) {
 +			sirius_init_syscalls++;
 +			printf("sirius: init syscall %u enter\n", (unsigned)code);
 +		}
@@ -26,7 +26,7 @@ diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
 +	{
 +		extern volatile int sirius_init_syscall_returns;
 +
-+		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 24) {
++		if (proc != NULL && proc_pid(proc) == 1 && sirius_init_syscall_returns < 256) {
 +			sirius_init_syscall_returns++;
 +			printf("sirius: init syscall %u return %d\n", (unsigned)code, error);
 +		}
@@ -240,7 +240,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  
  #include <sys/errno.h>
  #include <sys/kdebug.h>
-@@ -687,6 +688,76 @@
+@@ -687,6 +688,81 @@
  		    esr, VM_KERNEL_ADDRHIDE(far), VM_KERNEL_UNSLIDE(get_saved_state_pc(state)), 0, 0);
  	}
  
@@ -251,7 +251,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +	 * reads the log back out of band.
 +	 */
 +	{
-+		extern volatile unsigned long long sirius_fault_log[8][5];
++		extern volatile unsigned long long sirius_fault_log[32][5];
 +		extern volatile int sirius_fault_log_count;
 +		extern thread_t sirius_init_thread;
 +		extern thread_t sirius_launchd_thread;
@@ -265,7 +265,12 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +
 +			sirius_fault_total++;
 +		}
-+		if (slot < 8 && traced) {
++		if (traced && fault_thread == sirius_launchd_thread) {
++			extern volatile unsigned long long sirius_launchd_fault_total;
++
++			sirius_launchd_fault_total++;
++		}
++		if (slot < 32 && traced) {
 +			sirius_fault_log[slot][0] = (unsigned long long)(unsigned int)class;
 +			sirius_fault_log[slot][1] = esr;
 +			sirius_fault_log[slot][2] = far;

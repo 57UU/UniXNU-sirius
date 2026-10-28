@@ -43,13 +43,17 @@ ABL (boot 分区 = 重编的 U-Boot boot.img)
 | 根文件系统 | ✅ | APFS 挂载 OS 卷 `disk2s1`；`bsd_init` 完整跑完；sealed-root 答案记录后继续 |
 | init / launchd | ✅ | `execve` 全链路通过（`cloneproc`→`proc locks`→`activate`→`namei 0`），`execve activate 0` |
 | 信任链 | ✅ | 原始 bundle（`7416ca4f…`，StaticTrustCache + Cryptex1,SystemTrustCache）打进 payload；AMFI 直接放行，`sirius-skip-cs` 已从 boot args 移除 |
-| 用户态 | 🔶 | launchd 跑起来（入口 `0x1005dee50`），发出 **24 条 syscall**（open `/dev/null`、`/dev/console`、getpid、`shared_region_check_np` …），pid 1 fault 122 次，然后停在 dyld 共享缓存 |
-| dyld 共享缓存 | 🔶 | 缓存在 SystemOS cryptex 卷（UUID `8846FE78-2910-4297-AF97-D59BB6F8FC16`，`System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64*`），不在根卷；已加 `sirius_systemos_union=1` 把该卷只读 union 叠到 `/`，**待上机验证** |
+| 用户态 | 🔶 | exec 后跑起来的是 **dyld 的 ignition**，不是 launchd 本体；**24 条是 trace 上限**，实际进入 31 条、返回 30 条。第 26 条 syscall 是 `sysctl` `security.mac.img4.ignition_blob`，pid 1 线程停在 `sysctl_root`/`sysctl`，用户 PC 为 dyld `__sysctl` 的 `svc` 后一指令 |
+| Image4 ignition | 🔶 | 停点已定位：AppleImage4 的 handler 以**无超时** `waitForMatchingService` 等 `IOAESAccelerator`，SDM710 没有 AES 硬件。已启用 SoftwareAES（`CONFIG_XNU_NATIVE_AES=y` + `board.toml` 的 `build-arm-driver.py SoftwareAES` / `build-software-aes-bindings.py`），待上机验证 |
+| dyld 共享缓存 | ✅ | SystemOS cryptex 卷（UUID `8846FE78-2910-4297-AF97-D59BB6F8FC16`）以 `/dev/disk4s1` 只读 union 叠到 `/`（flags `0x14809021`，挂载表 2→3）；缓存目录与 `dyld_shared_cache_arm64` 的 probe 从 ENOENT 变 0（2026-10-28 14:50 上机验证） |
 | 时钟 | 🔶 | 400 kHz → 25 MHz 已上机验证（`EMMC clock25=ok`）；50 MHz 需 CMD6 高速模式 |
 
-**最近一次部署**：kernel `c9f51f3b…`（`sirius-systemos-union.patch` + NativeEmmc 的挂载/探针），
-`payload-full.img` sha256 `ddac80bd…`，boot args 含 `ignition_level=1`、`launchd_unsecure_cache=1`、
-`sirius_systemos_union=1`。`fastboot flash vendor` 已成功（8.4 s）；
+**最近一次部署**：kernel `0ff05f7f…`（union + launchd 线程采样 + syscall/sysctl trace），
+`payload-full.img` sha256 `8cd27069…`，boot args 含 `ignition_level=1`、`launchd_unsecure_cache=1`、
+`sirius_systemos_union=1`。14:50 的日志证实 union 生效（`docs/evidence/sirius-systemos-union-20261028-1450.log`）；
+15:22 的日志把停点定位到 Image4 ignition（`docs/evidence/sirius-image4-wait-20261028-1522.log`）：
+实际 31 条 syscall，最后一条 `security.mac.img4.ignition_blob` 不返回。NativeAES 构建已在进行；
+刷机/上机结果会替换这一行。
 
 **恢复 Linux**：fastboot 下 `fastboot flash boot ~/Projects/sirius-distro/build/boot.img`（原版 U-Boot，
 不认标记），操作完再把 `uboot/boot-unixnu.img` 刷回去。
@@ -170,16 +174,20 @@ sudo -n python3 scripts/capture-usb-console.py --port /dev/ttyACM0 --duration 20
    缓存路径就落在根挂载上。UniXNU 自带的 `XNU_OWNER_CACHE_MOUNT` 走不通：它要求
    `XNU_OWNER_ROOT_TRUST=1` 和 `native_verified_block_*`（owner-root 信任链），本板没有。
 9. **补丁目录**：设备仓 `patches/xnu/` 会**整体遮蔽**主仓补丁目录；Linux 专用补丁放 `patches/xnu-linux/`。
+10. **Image4 ignition 与软件 AES**：dyld 的 libignition 通过 `security.mac.img4.ignition_blob` 取 ignition
+    blob；AppleImage4 kext 的 handler 会 `waitForMatchingService("IOAESAccelerator")`，超时参数是
+    `(1<<64)-1`（无超时）。SDM710 没有 AES 硬件，所以必须编入 UniXNU 的 `NativeAES`（SoftwareAES）软件
+    实现，让它在 handler 之前发布 `IOAESAccelerator`；否则这个 sysctl 永不返回，用户态停在这里。
 
 ## 5. 下一步路线（按优先级）
 
-1. **验证 SystemOS union（当前这一步）**。刷完看这几行：
-   `sirius: mounts before systemos` / `NEMMC mount …`（SystemOS 卷现在挂在哪）、
-   `NEMMC systemos device /dev/diskN`、`sirius: systemos mount <errno>`、
-   `NEMMC probe /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> <errno>`。
-   - 返回 0：缓存可读，launchd 应当继续往下走。
-   - `EBUSY`：卷已被 APFS 挂在别处，用日志里的挂载点，改 `DYLD_SHARED_CACHE_DIR` 或 bindfs。
-   - `EINVAL/ENOTSUP`：APFS 的用户态 mount payload 不对，对照 `offline-owner-systemos-mount.patch` 的字段。
+1. **验证 SoftwareAES 解开 Image4 等待（当前这一步）**。NativeAES 已编入（见 §2 Image4 行），刷完看：
+   - `sirius: sysctl mib 101.100.118.100` 之后是否出现 `sirius: init syscall 202 return 0`；
+   - `NEMMC launchd pc` 是否离开 dyld 的 `__sysctl` 返回地址，`NEMMC probe init syscalls` 是否 > 31；
+   - 若仍停在 sysctl，确认 `NativeAES` 真的 start（KAT/`native_aes_registered` 探针）；若 sysctl 返回
+     错误而 libignition 继续，那说明 ignition blob 在 level 1 是可选的，也接受。
+   备选（不首选）：让 AppleImage4 handler 在缺 `IOAESAccelerator` 时返回 `ENOTSUP`；改原 kext 不现实，
+   软件 provider 是干净路径。
 2. **时钟到 50 MHz**：25 MHz 已验证；50 MHz 需在 `emmc_set_card_clock_25m` 之后加 CMD6
    （SWITCH，`HS_TIMING=1`），失败要能退回 25 MHz。
 3. **自动进 fastboot**：BCB 写 `uboot-fastboot` 能让下次启动进 U-Boot fastboot，但**从它那里刷分区会挂住**

@@ -1,0 +1,73 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8069,6 +8069,62 @@
+ }
+ #endif
+ 
++/* sirius: the dyld shared cache is not on the OS volume the driver mounts as root; it lives in
++ * the SystemOS cryptex volume of the image set. dyld reads it from /System/Library/Caches/
++ * com.apple.dyld, so that volume is composed over "/" as a read-only union before init runs -
++ * the same composition iPadOS performs, and the one vm_unix.c accepts, because the cache vnode
++ * then belongs to the process' root mount. Bring-up instrument: sirius_systemos_union=1. */
++static void
++sirius_systemos_union(proc_t p, user_addr_t scratch)
++{
++	unsigned enable = 0;
++	if (!PE_parse_boot_argn("sirius_systemos_union", &enable, sizeof(enable)) || enable != 1) {
++		return;
++	}
++	extern int sirius_systemos_device(char *path, size_t size);
++	extern void sirius_mount_table(const char *stage);
++	extern int sirius_cache_probe(const char *stage);
++	char device_path[64] = {};
++	sirius_mount_table("sirius: mounts before systemos");
++	sirius_cache_probe("sirius: cache before systemos");
++	if (!sirius_systemos_device(device_path, sizeof(device_path))) {
++		printf("sirius: systemos volume absent\n");
++		return;
++	}
++	printf("sirius: systemos device %s\n", device_path);
++	uint64_t mount_flags = MNT_RDONLY | MNT_UNION;
++	uint16_t mount_mode = 1;
++	uint32_t anonymous_owner = 99;
++	uint8_t mount_data[0x150] = {};
++	user64_addr_t spec = scratch + 0x160;
++	memcpy(mount_data, &spec, sizeof(spec));
++	memcpy(mount_data + 8, &mount_flags, sizeof(mount_flags));
++	memcpy(mount_data + 16, &mount_mode, sizeof(mount_mode));
++	memcpy(mount_data + 0x144, &anonymous_owner, sizeof(anonymous_owner));
++	memcpy(mount_data + 0x148, &anonymous_owner, sizeof(anonymous_owner));
++	struct mount_args request = { .type = scratch + 0x100, .path = scratch + 0x120,
++	    .flags = (int)mount_flags, .data = scratch + 0x200 };
++	int32_t result = 0;
++	int error = copyout("apfs", request.type, 5);
++	if (!error) {
++		error = copyout("/", request.path, 2);
++	}
++	if (!error) {
++		error = copyout(device_path, spec, strlen(device_path) + 1);
++	}
++	if (!error) {
++		error = copyout(mount_data, request.data, sizeof(mount_data));
++	}
++	if (error) {
++		printf("sirius: systemos copyout %d\n", error);
++		return;
++	}
++	error = mount(p, &request, &result);
++	printf("sirius: systemos mount %d\n", error);
++	sirius_mount_table("sirius: mounts after systemos");
++	sirius_cache_probe("sirius: cache after systemos");
++}
++
+ static int
+ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path, user_addr_t envp)
+ {
+@@ -8216,6 +8272,7 @@
+ 	 * would fault in copyout, so it is worth seeing. */
+ 	printf("sirius: init scratch %p page %llu\n", (void *)(uintptr_t)scratch_addr,
+ 	    (unsigned long long)map_page_size);
++	sirius_systemos_union(p, (user_addr_t)scratch_addr);
+ 	user_addr_t init_envp = USER_ADDR_NULL;
+ #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
+ 	boot_progress_stage("SystemOS mount enter");

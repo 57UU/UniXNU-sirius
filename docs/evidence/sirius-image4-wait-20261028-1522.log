@@ -1,0 +1,427 @@
+# sirius: the Image4 ignition sysctl parks the exec'd image (2026-10-28 15:22 capture)
+#
+# Kernel 0ff05f7f7fec75a54b5d6071c452bc6ce19f5d527eefb5d09a415e58742ed7e4 (syscall limit raised
+# from 24 to 256 and the sysctl MIB traced); payload-full.img sha256 8cd27069...; same union and
+# trust-cache arguments as the 14:50 boot. Raw capture: .scratch/console-sysctl-20261028-1522.log.
+#
+# What it shows: the "24 launchd syscalls" of the earlier captures were the trace's cap, not a
+# stop. The exec'd dyld gets through kern.bootargs (MIB 1.149) and then calls sysctl on
+# security.mac.img4.ignition_blob (MIB 101.100.118.100). It never returns: the pid 1 thread is
+# inside sysctl_root/sysctl with 31 syscalls entered and 30 returned, and its saved user PC is
+# the instruction after dyld's __sysctl svc. The Image4 handler (AppleImage4 kext) waits without
+# a timeout for an IOAESAccelerator service; SDM710 publishes none, so libignition parks before
+# it can publish the ignition blob. Enabling the software AES personality is the next build.
+#
+Darwin Kernel Version 23.6.0: Wed Oct 28 07:19:42 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837
+Darwin Kernel Version 23.6.0: Wed Oct 28 07:19:42 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837
+NEMMC alive beats/reads 0000000000000000
+NEMMC alive blocks 0000000000000000
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 0
+NEMMC probe init faults 0
+apfs_log_op_with_proc:3091: disk2s1 mounting volume DawnUpdate21H461.J120J121J207J208OS, requested by: kernel_task (pid 0); parent: kernel_task (pid 0)
+apfs_log_op_with_proc:3091: disk2s1 mount-complete volume DawnUpdate21H461.J120J121J207J208OS, requested by: kernel_task (pid 0); parent: kernel_task (pid 0)
+NEMMC alive beats/reads 00000001000000c9
+NEMMC alive blocks 00000000000005ff
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 0
+NEMMC probe init faults 0
+SIRIUS user thread start tid 00000000000000ed
+SIRIUS user thread start pc 0000000000000000
+sirius: init scratch 0x1000 page 4096
+sirius: mounts before systemosNEMMC mount apfs /dev/disk2s1 /
+NEMMC mount flags 000000001480d001
+NEMMC mount devfs devfs /dev
+NEMMC mount flags 0000000004101000
+NEMMC mount count 2
+NEMMC probe /System/Library/Caches/com.apple.dyld/ -> 2
+NEMMC probe /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 2
+NEMMC probe /private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 2
+NEMMC probe /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/ -> 2
+NEMMC systemos device /dev/disk4s1
+sirius: systemos device /dev/disk4s1
+apfs_log_op_with_proc:3091: disk4s1 mounting volume DawnUpdate21H461.J120J121J207J208SystemCryptex, requested by: init (pid 1); parent: kernel_task (pid 0)
+apfs_log_op_with_proc:3091: disk4s1 mount-complete volume DawnUpdate21H461.J120J121J207J208SystemCryptex, requested by: init (pid 1); parent: kernel_task (pid 0)
+sirius: systemos mount 0
+NEMMC mount flags 000000001480d001
+NEMMC mount devfs devfs /dev
+NEMMC mount flags 0000000004101000
+NEMMC mount apfs /dev/disk4s1 /
+NEMMC mount flags 0000000014809021
+NEMMC mount count 3
+sirius: cache after systemosSIRIUS USB: event 0x0000c046
+NEMMC probe /System/Library/Caches/com.apple.dyld/ -> 0
+NEMMC probe /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 0
+NEMMC probe /private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 2
+NEMMC probe /System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/ -> 2
+load_init_program: attempting to load /sbin/launchd
+sirius: init path copyout enter /sbin/launchd
+sirius: init path copyout 0
+sirius: init argv enter
+sirius: init token enter
+sirius: init execve enter
+sirius: execve cloneproc enter
+sirius: execve cloneproc done
+sirius: execve proc locks enter
+sirius: execve proc locks done
+sirius: execve activate enter
+sirius: execve namei enter
+sirius: execve namei 0
+NEMMC alive beats/reads 0000000200000156
+NEMMC alive blocks 0000000000000a9d
+NEMMC probe init syscalls 0
+NEMMC probe init returns 0
+NEMMC probe init asts 1
+NEMMC probe init faults 3
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 0000000096000045
+SIRIUS fault far 0000000000001100
+SIRIUS fault pc fffffff00741faa4
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 0000000096000046
+SIRIUS fault far fffffff09519c000
+SIRIUS fault pc fffffff0079ff63c
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 0000000096000047
+SIRIUS fault far fffffff0951dd000
+SIRIUS fault pc fffffff0079ff4b8
+SIRIUS fault user 0
+SIRIUS env esr 0000000096000045
+SIRIUS env far 0000000000001100
+SIRIUS env pc fffffff00741faa4
+SIRIUS env ttbr0 00000000a43f4800
+SIRIUS env ttep 00000000a43f4800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020000204
+SIRIUS env pmap fffffff3a17f7788
+SIRIUS env esr 0000000096000046
+SIRIUS env far fffffff09519c000
+SIRIUS env pc fffffff0079ff63c
+SIRIUS env ttbr0 00000000a43f4800
+SIRIUS env ttep 00000000a43f4800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env pmap fffffff3a17f7788
+SIRIUS env esr 0000000096000047
+SIRIUS env far fffffff0951dd000
+SIRIUS env pc fffffff0079ff4b8
+SIRIUS env ttbr0 00000000a43f4800
+SIRIUS env ttep 00000000a43f4800
+SIRIUS env asid 0000000000000001
+SIRIUS env spsr 0000000020400204
+SIRIUS env pmap fffffff3a17f7788
+sirius: execve activate 0
+sirius: exec switch proc_active 1 task_active 1 thread_active 1
+sirius: init execve returned 0
+SIRIUS user thread start tid 00000000000000fd
+SIRIUS user thread start pc 0000000100860e50
+sirius: init syscall 74 enter
+sirius: init syscall 74 return 0
+sirius: init syscall 372 enter
+sirius: init syscall 372 return 0
+sirius: init syscall 294 enter
+sirius: init syscall 294 return 12
+sirius: init syscall 20 enter
+sirius: init syscall 20 return 0
+sirius: init syscall 427 enter
+sirius: init syscall 427 return 0
+sirius: init syscall 427 enter
+sirius: init syscall 427 return 0
+sirius: init syscall 381 enter
+sirius: init syscall 381 return 0
+sirius: init syscall 381 enter
+sirius: init syscall 381 return 0
+sirius: init syscall 5 enter
+sirius: init syscall 5 return 0
+sirius: init syscall 90 enter
+sirius: init syscall 90 return 0
+sirius: init syscall 5 enter
+sirius: init syscall 5 return 0
+sirius: init syscall 90 enter
+sirius: init syscall 90 return 0
+sirius: init syscall 5 enter
+sirius: init syscall 5 return 0
+sirius: init syscall 90 enter
+sirius: init syscall 90 return 0
+sirius: init syscall 5 enter
+sirius: init syscall 5 return 0
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write Darwin Ignition Sequence Version
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write  1.0.0: Fri Jul 11 17:33:51 PDT 
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write 2025; root:libignition-56~62436/
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write libignition_core/RELEASE_ARM64 
+sirius: init syscall 202 enter
+sirius: sysctl mib 0.3.0.0 namelen 2 oldp 0x16f858fc8 oldlenp 0x16f858fc0 newp 0x1008a1b29 newlen 13
+sirius: init syscall 202 return 0
+sirius: init syscall 202 enter
+sirius: sysctl mib 1.149.0.0 namelen 2 oldp 0x16f859078 oldlenp 0x16f859070 newp 0 newlen 0
+sirius: init syscall 202 return 0
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write libignition: 1: arguments       
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write     : 
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write libignition: 1:   ignition level
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write     : 0x1 
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write libignition: 1:   force dylib ro
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write ot  : 0x0 
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write libignition: 1:   halt after sta
+sirius: init syscall 4 enter
+sirius: init syscall 4 return 0
+sirius: init write ge  : n/a 
+sirius: init syscall 202 enter
+sirius: sysctl mib 0.3.0.0 namelen 2 oldp 0x16f858988 oldlenp 0x16f858980 newp 0x1008a22af newlen 31
+sirius: init syscall 202 return 0
+sirius: init syscall 202 enter
+sirius: sysctl mib 101.100.118.100 namelen 4 oldp 0x16f858e70 oldlenp 0x16f858e68 newp 0 newlen 0
+NEMMC alive beats/reads 0000000300000171
+NEMMC alive blocks 0000000000000d8f
+NEMMC probe init syscalls 31
+NEMMC probe init returns 30
+NEMMC probe init asts 2
+NEMMC probe init faults 122
+SIRIUS fault class 0000000000000025
+SIRIUS fault esr 0000000096000045
+SIRIUS fault far 000000016f859e40
+SIRIUS fault pc fffffff00741fa88
+SIRIUS fault user 0
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010085ac38
+SIRIUS fault pc 000000010085ac38
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010083a704
+SIRIUS fault pc 000000010083a704
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 00000001008520c8
+SIRIUS fault pc 00000001008520c8
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 0000000100824018
+SIRIUS fault pc 00000001008520c8
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 00000001008302f0
+SIRIUS fault pc 00000001008302f0
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008940f0
+SIRIUS fault pc 000000010083038c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 0000000100825b70
+SIRIUS fault pc 0000000100825b70
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 0000000100827354
+SIRIUS fault pc 0000000100827354
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010082660c
+SIRIUS fault pc 000000010082660c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010082c850
+SIRIUS fault pc 000000010082c850
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 0000000100899ff5
+SIRIUS fault pc 000000010082c85c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 0000000100831440
+SIRIUS fault pc 0000000100831440
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 0000000100832994
+SIRIUS fault pc 0000000100832994
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 0000000100895550
+SIRIUS fault pc 00000001008260c0
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 0000000100834668
+SIRIUS fault pc 0000000100834668
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010083b9f8
+SIRIUS fault pc 000000010083b9f8
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 000000010089d20d
+SIRIUS fault pc 000000010082c894
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008b4004
+SIRIUS fault pc 00000001008314b8
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000020
+SIRIUS fault esr 0000000082000007
+SIRIUS fault far 000000010083893c
+SIRIUS fault pc 000000010083893c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008a4000
+SIRIUS fault pc 0000000100838ba0
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 000000009200004f
+SIRIUS fault far 00000001008a4000
+SIRIUS fault pc 0000000100838d98
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008a5008
+SIRIUS fault pc 0000000100838c6c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 000000009200004f
+SIRIUS fault far 00000001008a5008
+SIRIUS fault pc 0000000100838d98
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008a6008
+SIRIUS fault pc 0000000100838c6c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 000000009200004f
+SIRIUS fault far 00000001008a6008
+SIRIUS fault pc 0000000100838d98
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008a7018
+SIRIUS fault pc 0000000100838c6c
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 000000009200004f
+SIRIUS fault far 00000001008a7018
+SIRIUS fault pc 0000000100838d98
+SIRIUS fault user 1
+SIRIUS fault class 0000000000000024
+SIRIUS fault esr 0000000092000007
+SIRIUS fault far 00000001008a8018
+SIRIUS fault pc 0000000100838ba0
+SIRIUS fault user 1
+SIRIUS env esr 0000000082000007
+SIRIUS env far 000000010085ac38
+SIRIUS env pc 000000010085ac38
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000000000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000082000007
+SIRIUS env far 000000010083a704
+SIRIUS env pc 000000010083a704
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000000000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000082000007
+SIRIUS env far 00000001008520c8
+SIRIUS env pc 00000001008520c8
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000000000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000092000007
+SIRIUS env far 0000000100824018
+SIRIUS env pc 00000001008520c8
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000000000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000082000007
+SIRIUS env far 00000001008302f0
+SIRIUS env pc 00000001008302f0
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000000000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000092000007
+SIRIUS env far 00000001008940f0
+SIRIUS env pc 000000010083038c
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000080000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000082000007
+SIRIUS env far 0000000100825b70
+SIRIUS env pc 0000000100825b70
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000080000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000082000007
+SIRIUS env far 0000000100827354
+SIRIUS env pc 0000000100827354
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000020000000
+SIRIUS env pmap fffffff3a17f7958
+SIRIUS env esr 0000000096000045
+SIRIUS env far 000000016f859e40
+SIRIUS env pc fffffff00741fa88
+SIRIUS env ttbr0 00000000a4d33800
+SIRIUS env ttep 00000000a4d33800
+SIRIUS env asid 0000000000000003
+SIRIUS env spsr 0000000020000204
+SIRIUS env pmap fffffff3a17f7958
+NEMMC launchd thread fffffff1d4d3b388
+NEMMC launchd state 1
+NEMMC launchd wait fffffff56e500840
+NEMMC launchd pc 0000000100858940
+Darwin Kernel Version 23.6.0: Wed Oct 28 07:19:42 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837
+Darwin Kernel Version 23.6.0: Wed Oct 28 07:19:42 UTC 2026; u57u:ios-obj/DEVELOPMENT_ARM64_BCM2837

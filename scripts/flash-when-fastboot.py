@@ -101,6 +101,10 @@ def main() -> int:
             print(out.strip() or "(no output)", flush=True)
             if "Finished" not in out:
                 return 1
+            # The last XNU boot armed the BCB with uboot-fastboot; leave it set and U-Boot
+            # enters its own fastboot instead of the payload. Clear it before the reset.
+            print("erasing misc", flush=True)
+            print(fastboot("-s", serial, "erase", "misc", timeout=60).strip(), flush=True)
             print("rebooting", flush=True)
             print(fastboot("-s", serial, "reboot", timeout=60).strip(), flush=True)
             return 0

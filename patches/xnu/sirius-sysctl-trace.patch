@@ -1,0 +1,19 @@
+--- a/bsd/kern/kern_newsysctl.c
++++ b/bsd/kern/kern_newsysctl.c
+@@ -1886,6 +1886,16 @@
+ 	error = copyin(uap->name, &name[0], uap->namelen * sizeof(int));
+ 	if (error) {
+ 		return error;
+ 	}
+ 
++	/* sirius: the 25th syscall of the exec'd image is a sysctl that never returns. The MIB
++	 * and the user pointers say which lookup it is and whether the buffer it writes is valid. */
++	if (proc_pid(p) == 1) {
++		printf("sirius: sysctl mib %d.%d.%d.%d namelen %u oldp %p oldlenp %p newp %p newlen %llu\n",
++		    name[0], name[1], uap->namelen > 2 ? name[2] : 0,
++		    uap->namelen > 3 ? name[3] : 0, uap->namelen,
++		    (void *)(uintptr_t)uap->old, (void *)(uintptr_t)uap->oldlenp,
++		    (void *)(uintptr_t)uap->new, (unsigned long long)uap->newlen);
++	}
++
+ 	AUDIT_ARG(ctlname, name, uap->namelen);

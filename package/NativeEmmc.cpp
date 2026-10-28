@@ -16,6 +16,11 @@
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
 #include <kern/sched_prim.h>
+#include <sys/mount.h>
+#include <sys/mount_internal.h>
+#include <sys/vnode.h>
+#include <sys/vnode_internal.h>
+#include <sys/namei.h>
 
 extern "C" {
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
@@ -126,7 +131,7 @@ volatile int sirius_user_faults;           /* user faults taken since then */
 volatile int sirius_kernel_faults;         /* pid 1 faults taken in kernel mode */
 /* Faults of the pid 1 thread, recorded in the handler and printed by the heartbeat: a kprintf
  * from inside the fault path can deadlock on the console the faulting thread already holds. */
-volatile unsigned long long sirius_fault_log[8][5];
+volatile unsigned long long sirius_fault_log[32][5];
 volatile int sirius_fault_log_count;
 /* The environment of the last pid 1 fault: map, its pmap, the live TTBR0, the copyio recovery
  * entry, the fault address and its fault code. */
@@ -140,6 +145,7 @@ volatile unsigned long long sirius_env_log[12][10];
 volatile int sirius_env_user_count;
 volatile int sirius_env_kern_count;
 volatile unsigned long long sirius_fault_total;
+volatile unsigned long long sirius_launchd_fault_total; /* the same counter for the exec thread */
 volatile int sirius_init_syscalls;         /* syscalls entered by pid 1 */
 volatile int sirius_init_syscall_returns;  /* ... and returned from */
 volatile int sirius_init_path_traces;      /* path traces printed for pid 1 */
@@ -171,6 +177,7 @@ sirius_user_thread_probe(void)
 }
 
 static unsigned int nemmc_stack_dumps;
+static unsigned int nemmc_launchd_stack_dumps;
 
 /* SDM710 reports FEAT_PAN2 (ID_AA64MMFR1_EL1.PAN = 0b0010), so the PE sets PSTATE.PAN on every
  * exception entry to EL1 whatever SCTLR_EL1.SPAN says. The kernel must therefore be built with
@@ -202,24 +209,36 @@ nemmc_report_pan(void)
 }
 
 static void
-nemmc_dump_init_stack(void)
+nemmc_dump_thread_stack(thread_t thread, const char *name)
 {
-	thread_t thread = sirius_init_thread;
-
-	nemmc_stack_dumps++;
-	emmc_log_hex("SIRIUS init thread ", (uint64_t)(uintptr_t)thread);
-	emmc_log_hex("SIRIUS init state/wait ",
-	    ((uint64_t)sirius_thread_state(thread) << 40) |
-	    (sirius_thread_wait_event(thread) & 0xffffffffffULL));
+	if (thread == nullptr) {
+		return;
+	}
+	emmc_log(name);
+	emmc_log_hex(" thread ", (uint64_t)(uintptr_t)thread);
+	emmc_log(name);
+	emmc_log_hex(" state ", (uint64_t)sirius_thread_state(thread));
+	emmc_log(name);
+	emmc_log_hex(" wait ", sirius_thread_wait_event(thread));
+	emmc_log(name);
+	emmc_log_hex(" user pc ", sirius_thread_user_pc(thread));
 	/* A kernel stack is 16 KiB; scan 4 KiB of it and keep only the words that point into
 	 * kernel text, which is the call chain the thread is sitting in. */
 	for (unsigned int i = 0; i < 512; i++) {
 		uint64_t word = sirius_thread_kstack_word(thread, i);
 
 		if (word >= 0xfffffff007004000ULL && word < 0xfffffff010000000ULL) {
-			emmc_log_hex("SIRIUS pc ", word);
+			emmc_log(name);
+			emmc_log_hex(" pc ", word);
 		}
 	}
+}
+
+static void
+nemmc_dump_init_stack(void)
+{
+	nemmc_stack_dumps++;
+	nemmc_dump_thread_stack(sirius_init_thread, "SIRIUS init");
 }
 
 static void
@@ -263,6 +282,7 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		emmc_log_dec("NEMMC probe init returns ", sirius_init_syscall_returns);
 		emmc_log_dec("NEMMC probe init asts ", sirius_init_asts);
 		emmc_log_dec("NEMMC probe init faults ", sirius_fault_total);
+		emmc_log_dec("NEMMC probe launchd faults ", sirius_launchd_fault_total);
 		{
 			static int reported;
 
@@ -278,7 +298,7 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 				emmc_log_hex("SIRIUS fault par ", sirius_fault_extra[8]);
 				emmc_log_hex("SIRIUS fault kernpte ", sirius_fault_extra[9]);
 			}
-			while (reported < sirius_fault_log_count && reported < 8) {
+			while (reported < sirius_fault_log_count && reported < 32) {
 				emmc_log_hex("SIRIUS fault class ", sirius_fault_log[reported][0]);
 				emmc_log_hex("SIRIUS fault esr ", sirius_fault_log[reported][1]);
 				emmc_log_hex("SIRIUS fault far ", sirius_fault_log[reported][2]);
@@ -305,9 +325,12 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		}
 		if (sirius_launchd_thread != nullptr) {
 			emmc_log_hex("NEMMC launchd thread ", (uint64_t)(uintptr_t)sirius_launchd_thread);
-			emmc_log_hex("NEMMC launchd state/wait ",
-			    ((uint64_t)sirius_thread_state(sirius_launchd_thread) << 40) |
-			    (sirius_thread_wait_event(sirius_launchd_thread) & 0xffffffffffULL));
+			emmc_log_dec("NEMMC launchd state ",
+			    (uint64_t)sirius_thread_state(sirius_launchd_thread));
+			emmc_log_hex("NEMMC launchd wait ",
+			    sirius_thread_wait_event(sirius_launchd_thread));
+			emmc_log_hex("NEMMC launchd pc ",
+			    sirius_thread_user_pc(sirius_launchd_thread));
 		}
 		/* The boot stops inside load_init_program_at_path: report where the pid 1 thread sits,
 		 * a few times, by dumping the top of its kernel stack. The values are kernel text
@@ -315,6 +338,13 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		if (sirius_init_thread != nullptr && nemmc_stack_dumps < 3 &&
 		    nemmc_heartbeats >= 20 + (uint32_t)nemmc_stack_dumps * 5) {
 			nemmc_dump_init_stack();
+		}
+		/* Same for the thread the exec started: its kernel stack and saved user PC separate a
+		 * thread spinning in the kernel (fault path, lock) from one looping in userland. */
+		if (sirius_launchd_thread != nullptr && nemmc_launchd_stack_dumps < 3 &&
+		    nemmc_heartbeats >= 22 + (uint32_t)nemmc_launchd_stack_dumps * 5) {
+			nemmc_launchd_stack_dumps++;
+			nemmc_dump_thread_stack(sirius_launchd_thread, "SIRIUS launchd");
 		}
 		uint64_t inflight = nemmc_inflight_lba;
 		if (inflight != 0 && nemmc_heartbeats - nemmc_inflight_beat > 1) {
@@ -388,6 +418,146 @@ nemmc_report_media_table(const char *stage)
 	}
 	matching->release();
 	emmc_log_dec("NEMMC media count ", index);
+}
+
+/*
+ * The SystemOS cryptex volume of the image set (044-76034, "DawnUpdate21H461...SystemCryptex").
+ * It carries /System/Library/Caches/com.apple.dyld, the dyld shared cache launchd cannot find on
+ * the OS volume. A mount(2) needs the block device as a path, and the volume UUID is the only
+ * stable identity: the BSD numbers depend on probe order.
+ */
+static const char sirius_systemos_uuid[] = "8846FE78-2910-4297-AF97-D59BB6F8FC16";
+
+static bool
+nemmc_same_uuid(const char *text)
+{
+	for (unsigned i = 0; i < sizeof(sirius_systemos_uuid) - 1; i++) {
+		char a = text[i], b = sirius_systemos_uuid[i];
+		if (a >= 'a' && a <= 'z') {
+			a = (char)(a - 'a' + 'A');
+		}
+		if (a != b) {
+			return false;
+		}
+	}
+	return text[sizeof(sirius_systemos_uuid) - 1] == '\0';
+}
+
+/* Path of the block device of the SystemOS volume, for a mount(2) of "apfs". 1 on success. */
+extern "C" int
+sirius_systemos_device(char *path, size_t size)
+{
+	if (path == nullptr || size < 8) {
+		return 0;
+	}
+	path[0] = '\0';
+	OSDictionary *matching = IOService::serviceMatching("IOMedia");
+	if (matching == nullptr) {
+		return 0;
+	}
+	OSIterator *iterator = IOService::getMatchingServices(matching);
+	unsigned matches = 0;
+	char candidate[64] = {};
+	while (iterator != nullptr) {
+		IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
+		if (media == nullptr) {
+			break;
+		}
+		OSString *uuid = OSDynamicCast(OSString, media->getProperty("UUID"));
+		OSString *name = OSDynamicCast(OSString, media->getProperty("BSD Name"));
+		if (uuid == nullptr || name == nullptr || !nemmc_same_uuid(uuid->getCStringNoCopy())) {
+			continue;
+		}
+		if (++matches > 1) {
+			break;
+		}
+		snprintf(candidate, sizeof(candidate), "/dev/%s", name->getCStringNoCopy());
+	}
+	if (iterator != nullptr) {
+		iterator->release();
+	}
+	matching->release();
+	if (matches != 1) {
+		emmc_log_dec("NEMMC systemos volume matches ", matches);
+		return 0;
+	}
+	strlcpy(path, candidate, size);
+	emmc_log("NEMMC systemos device ");
+	for (const char *c = candidate; *c != '\0'; c++) {
+		sirius_usb_log_char(*c);
+	}
+	sirius_usb_log_char('\n');
+	return 1;
+}
+
+/* Every mount with its type, device and mount point: the only way to see where APFS put the
+ * volumes the SHNGROOT windows carry. */
+extern "C" void
+sirius_mount_table(const char *stage)
+{
+	emmc_log(stage);
+	unsigned index = 0;
+	mount_t entry;
+	TAILQ_FOREACH(entry, &mountlist, mnt_list) {
+		if (index++ >= 8) {
+			break;
+		}
+		emmc_log("NEMMC mount ");
+		const char *text = entry->mnt_vfsstat.f_fstypename;
+		for (unsigned i = 0; text[i] != '\0' && i < 12; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		sirius_usb_log_char(' ');
+		text = entry->mnt_vfsstat.f_mntfromname;
+		for (unsigned i = 0; text[i] != '\0' && i < 20; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		sirius_usb_log_char(' ');
+		text = entry->mnt_vfsstat.f_mntonname;
+		for (unsigned i = 0; text[i] != '\0' && i < 40; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		sirius_usb_log_char('\n');
+		emmc_log_hex("NEMMC mount flags ", entry->mnt_flag);
+	}
+	emmc_log_dec("NEMMC mount count ", index);
+}
+
+/* errno of a lookup and the flags of the vnode it produced: SF_RESTRICTED decides whether
+ * vm_unix.c maps a dyld cache that is not on the root volume. */
+extern "C" int
+sirius_cache_probe(const char *stage)
+{
+	static const char *const paths[] = {
+		"/System/Library/Caches/com.apple.dyld/",
+		"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
+		"/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
+		"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/",
+	};
+	emmc_log(stage);
+	vfs_context_t context = vfs_context_current();
+	int last = 0;
+	for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+		vnode_t vnode = NULLVP;
+		int error = vnode_lookup(paths[i], 0, &vnode, context);
+		emmc_log("NEMMC probe ");
+		for (const char *c = paths[i]; *c != '\0'; c++) {
+			sirius_usb_log_char(*c);
+		}
+		emmc_log_dec(" -> ", error);
+		if (error == 0) {
+			struct vnode_attr attr;
+			VATTR_INIT(&attr);
+			VATTR_WANTED(&attr, va_flags);
+			if (vnode_getattr(vnode, &attr, context) == 0) {
+				emmc_log_hex("NEMMC probe flags ", attr.va_flags);
+			}
+			emmc_log_hex("NEMMC probe mount ", (uint64_t)(uintptr_t)vnode_mount(vnode));
+			vnode_put(vnode);
+		}
+		last = error;
+	}
+	return last;
 }
 
 /* The completion is fired from a thread call, never inside doAsyncReadWrite. Running it in the

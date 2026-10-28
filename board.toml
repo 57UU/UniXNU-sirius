@@ -27,7 +27,7 @@ kit = "sirius"
 # the board's fork with the GIC-500 pre-configuration and the INTID 19 timer. XnuPrelink is the
 # prelink kit the OS profile names.
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
 
 # The unchanged iPad7,1 iPadOS 17.7.11 restore image, the same target as fajita and sheng.
 # SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication, so it runs
@@ -63,6 +63,8 @@ archives = [
   "build-sirius-emmc.py",             # read-only SDCC1 probe (kits/sirius/sirius_emmc.c)
   "build-native-emmc.py",             # the IOKit block driver (kits/sirius/NativeEmmc.cpp); its
                                      # IOStorageFamily imports are bound to the original kernelcache
+  "component:SoftwareAES",             # the software IOAESAccelerator provider (UniXNU drivers/SoftwareAES)
+  "build-software-aes-bindings.py",   # binds it to the original IOAESAccelerator/crypto methods
 ]
 
 # The hardware description handed to the payload step. dts/sirius.dts describes the board

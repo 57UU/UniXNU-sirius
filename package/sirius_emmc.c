@@ -581,6 +581,11 @@ emmc_smmu_probe(void)
  * descriptor-fetch error. */
 static uint8_t adma_desc[256] __attribute__((aligned(256)));
 
+/* The per-read trace below is bring-up evidence. After the first few hundred blocks it only
+ * floods the USB ring and pushes the userland lines out of a capture, so it stops there; the
+ * failure paths keep reporting unconditionally. */
+static unsigned emmc_trace_budget = 256;
+
 /* Everything a data command needs before the transfer is armed. U-Boot does the same two things
  * for every data command: force the data timeout control to 0x0e and set the block length. */
 static void
@@ -606,13 +611,19 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 	if (emmc_clear_command_line() != 0) {
 		return -1;
 	}
-	ring_puts("EMMC timeout-in=");
-	ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
-	ring_puts("\r\n");
+	boolean_t trace = emmc_trace_budget != 0;
+	if (trace) {
+		emmc_trace_budget--;
+		ring_puts("EMMC timeout-in=");
+		ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
+		ring_puts("\r\n");
+	}
 	emmc_prepare_transfer();
-	ring_puts("EMMC timeout-set=");
-	ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
-	ring_puts("\r\n");
+	if (trace) {
+		ring_puts("EMMC timeout-set=");
+		ring_hex(sdhci_read8(SDHCI_TIMEOUT_CONTROL), 2);
+		ring_puts("\r\n");
+	}
 	for (unsigned i = 0; i < 512; i++) {
 		sdma_buffer[i] = 0;
 	}
@@ -672,19 +683,21 @@ sdhci_read_block_adma2(uint32_t lba, uint8_t *out)
 	 * keeps it running while the data phase is pending. */
 	uint16_t clock_during = sdhci_read16(SDHCI_CLOCK_CONTROL);
 	uint32_t gcc_during = gcc_read(GCC_SDCC1_APPS_CBCR);
-	ring_puts("EMMC clock=");
-	ring_hex(sdhci_read16(SDHCI_CLOCK_CONTROL), 4);
-	ring_puts("\r\n");
-	ring_puts("EMMC clk-during=");
-	ring_hex(clock_during, 4);
-	ring_puts(" gcc=");
-	ring_hex(gcc_during, 8);
-	ring_puts("\r\n");
-	ring_puts("EMMC dat seen=");
-	ring_hex(seen, 4);
-	ring_puts(" trans=");
-	ring_dec(transitions);
-	ring_puts("\r\n");
+	if (trace) {
+		ring_puts("EMMC clock=");
+		ring_hex(sdhci_read16(SDHCI_CLOCK_CONTROL), 4);
+		ring_puts("\r\n");
+		ring_puts("EMMC clk-during=");
+		ring_hex(clock_during, 4);
+		ring_puts(" gcc=");
+		ring_hex(gcc_during, 8);
+		ring_puts("\r\n");
+		ring_puts("EMMC dat seen=");
+		ring_hex(seen, 4);
+		ring_puts(" trans=");
+		ring_dec(transitions);
+		ring_puts("\r\n");
+	}
 	if (sdhci_wait(SDHCI_INT_TRANSFER_COMPLETE, 2000000) <= 0) {
 		/* 0x54: bits[1:0] say whether the descriptor was rejected (01), the transfer failed on
 		 * the bus (10) or both (11). That separates a malformed table from an IOMMU/bus problem. */
