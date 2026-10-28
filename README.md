@@ -41,17 +41,20 @@ selected from the U-Boot boot menu.
 | Platform expert | working: MMU on, 19.2 MHz timer, PSCI reset proven by the reset loop |
 | Console | working: boot-progress panel with the live kernel log, and a CDC-ACM USB console whose ring also carries the kernel's own `printf` output and any panic message |
 | IOKit | working: `sheng-smp=1` makes the native ArmCpu claim every `/cpus` nub and the board publishes the `ApplePMGRNub` AMFI looks for, so the prelinked kexts start |
-| Storage (eMMC) | working: SDCC1 at 400 kHz, SHNGROOT windows of `[userdata]` published as block devices, whole-disk media of 0x747BFDF sectors; IOStorageFamily parses the GPT through the driver |
+| Storage (eMMC) | working: SDCC1 at 25 MHz, SHNGROOT windows of `[userdata]` published as block devices, whole-disk media of 0x747BFDF sectors; IOStorageFamily parses the GPT through the driver |
 | Root filesystem | working: APFS mounts the OS volume (`disk2s1`), `bsd_init` completes and the sealed-root answer is recorded instead of panicking |
-| init / launchd | working: `execve` of `/sbin/launchd` completes (`execve activate 0`); the exec policy answer is recorded with `sirius-skip-cs=1` until the trust cache is supplied |
-| Userland | **next**: after the successful exec the kernel stops asking the driver for blocks, so the remaining wait is past storage; the eMMC clock also needs to leave 400 kHz |
+| init / launchd | working: `execve` of `/sbin/launchd` completes (`execve activate 0`) and AMFI accepts it from the original trust-cache bundle the payload carries, so `sirius-skip-cs` is gone |
+| Userland | working up to the dyld shared cache: launchd starts at `0x1005dee50` and issues 24 syscalls (`open /dev/null`, `/dev/console`, `getpid`, `shared_region_check_np`, …), then stops because the cache is not on the root volume |
 
-Where it stops now: `execve` returns 0 for launchd, the driver then sees no further
-requests, and nothing else is printed. The eMMC clock is still the identification
-rate (about 550 blocks/s), which is a speed problem rather than the cause of that
-wait. The proper fix for the exec policy is the original trust-cache bundle
-(`build-original-system-trust.py` + `build payload --trust-cache`), which also
-retires `sirius-skip-cs=1`.
+Where it stops now: dyld looks for `/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64`
+and gets ENOENT, because that cache belongs to the `Cryptex1,SystemOS` volume of the image set
+(`044-76034`), not to the OS volume the driver mounts as root. `sirius_systemos_union=1` composes
+that volume read-only over `/` with `MNT_UNION` before init runs — the same layout iPadOS uses, and
+the one `vm_unix.c` accepts in a `CONFIG_CSR=0` kernel. Whether the mount succeeds is the current
+open question; the boot prints `sirius: systemos mount <errno>` and a mount table around it.
+
+The eMMC clock is at 25 MHz (was the 400 kHz identification rate, about 550 blocks/s), which was a
+speed problem rather than the cause of any of those waits.
 
 The full history, the solved problems and the road map are in `docs/HANDOFF.zh-CN.md`; the
 machine-checked version of the same facts is `porting.toml`.
@@ -75,29 +78,38 @@ machine-checked version of the same facts is `porting.toml`.
 ## Building
 
 The kernel step needs macOS + Xcode (the `kernel` workflow in this repository runs it) **or** the
-Linux toolchain inside the Podman image of [`containers/xnu-linux/`](containers/xnu-linux/)
-(`./scripts/xnu-container.sh build-image`, then `... run bash -lc './unixnu build kernel -D ../sirius'`);
-everything else builds on Linux against the same UniXNU checkout.
+Linux toolchain inside the Podman image of [`containers/xnu-linux/`](containers/xnu-linux/), which is
+the normal local loop here:
 
 ```sh
-git clone --recurse-submodules https://github.com/UniXNU/UniXNU
-git clone https://github.com/57UU/UniXNU-sirius
-cd UniXNU
-./unixnu defconfig sirius_defconfig -D ../UniXNU-sirius
-./unixnu fetch
-./unixnu status --json
-./unixnu build kernel            # macOS (or the CI workflow of this repository)
-./unixnu build package           # UniXNU.efi (Linux OK)
-bash scripts/build-darwinboot.sh # DarwinBoot.efi (Linux OK), from the assembled tree
-./unixnu build payload           # the FAT volume (Linux OK)
-python3 ../UniXNU-sirius/scripts/make-uboot-payload.py \
-  --payload out/sirius/ipados-17.7.11-21H461/sirius/payload/payload.img \
-  --unixnu-efi out/sirius/ipados-17.7.11-21H461/sirius/package/Build/Out/AARCH64-DEBUG/UniXNU.efi \
-  --darwinboot-efi build/DarwinBoot/DEBUG_CLANGPDB/AARCH64/DarwinBoot.efi
+cd sirius
+./scripts/xnu-container.sh build-image            # once, 20–45 min
+export XDG_RUNTIME_DIR=/tmp/xdgrt                 # podman needs a writable runtime dir
+./scripts/xnu-container.sh run bash -lc '
+  cd ../UniXNU && ./unixnu defconfig sirius_defconfig -D ../sirius && ./unixnu build kernel -D ../sirius'
 ```
 
+Everything else builds on the host against the same UniXNU checkout:
+
+```sh
+cd UniXNU
+./unixnu build package                        # UniXNU.efi
+bash out/sirius/ipados-17.7.11-21H461/sirius/tree/scripts/build-darwinboot.sh   # DarwinBoot.efi, only when drivers/DarwinBoot changes
+./unixnu build payload --kernel out/sirius/ipados-17.7.11-21H461/sirius/kernel/kernel.macho \
+  --trust-cache build/original-static-system-trust/original-static-system.bundle
+python3 ../sirius/scripts/make-uboot-payload.py \
+  --payload out/sirius/ipados-17.7.11-21H461/sirius/payload/payload.img \
+  --unixnu-efi out/sirius/ipados-17.7.11-21H461/sirius/package/Build/Out/AARCH64-DEBUG/UniXNU.efi \
+  --darwinboot-efi out/sirius/ipados-17.7.11-21H461/sirius/tree/build/DarwinBoot/DEBUG_CLANGPDB/AARCH64/DarwinBoot.efi \
+  --marker --output ../payload-full.img
+```
+
+Omitting `--trust-cache` produces a payload without `kernel.macho.trustcache`; AMFI then kills
+launchd with namespace 9 / code 8, which is a packing mistake, not a kernel regression.
+
 Outputs live under `out/sirius/ipados-17.7.11-21H461/sirius/`. `unixnu status --json` prints the
-resolved profiles, revisions and patch order.
+resolved profiles, revisions and patch order. Flashing and log capture are in
+`docs/HANDOFF.zh-CN.md` §3.5.
 
 ## Hardware values
 

@@ -1,0 +1,33 @@
+# sirius: launchd stops at the missing dyld shared cache (2026-10-28 13:50 capture)
+#
+# Kernel: 8091fb20f0613d82a34df6467f05a4df6d8107dbd758e2a48753ff867f42c41d, i.e. the build
+# before sirius-systemos-union.patch. Captured from /dev/ttyACM0 (the CDC-ACM ring; a host byte
+# replays the whole ring, so the raw 3.4 MB capture holds the boot twice — this is the trimmed
+# form; raw file was .scratch/console-now.log).
+#
+# What it shows: the OS volume mounts (disk2s1), AMFI latches its PMGR and lets launchd exec,
+# launchd issues 24 syscalls, and then every dyld cache path is ENOENT while /usr/lib/dyld and
+# /sbin/launchd resolve. The cache lives in the SystemOS cryptex volume, which this boot does not
+# mount — that is the stop this port is now fixing.
+188:NEMMC media table after publishNEMMC media count 0
+201:skip attaching fsw to lo0 using legacy TX modelAMFI: PMGRAON latched to: ffffffff
+202:AMFI: Enabling developer mode since protected data is not available
+5401:apfs_log_op_with_proc:3091: disk2s1 mount-complete volume DawnUpdate21H461.J120J121J207J208OS, requested by: kernel_task (pid 0); parent: kernel_task (pid 0)
+5815:sirius: init path copyout enter /sbin/launchd
+5819:sirius: init execve enter
+7752:sirius: init execve returned 0
+10705:sirius: init syscall 294 enter
+10708:sirius: init syscall 294 return 12
+10884:sirius: path /System/Library/Caches/com.apple.dyld/ -> 2
+10885:sirius: path /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 -> 2
+10886:sirius: path /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e -> 2
+11064:sirius: init call 5 err 0 rval 0 arg 1007d9c90 /dev/null
+11069:sirius: init call 5 err 0 rval 1 arg 1007d9c90 /dev/null
+11074:sirius: init call 5 err 0 rval 2 arg 1007d9c90 /dev/null
+11079:sirius: init call 5 err 0 rval 3 arg 1007ceb52 /dev/console
+11104:sirius: init write libignition: 1:   ignition level
+11143:sirius: path /System/Cryptexes/OS/ -> 2
+11144:sirius: path /usr/lib/dyld -> 0
+11145:sirius: path /sbin/launchd -> 0
+11262:NEMMC launchd thread fffffff514c68be0
+11263:NEMMC launchd state/wait 000001f3480856c0

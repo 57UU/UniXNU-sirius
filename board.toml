@@ -119,6 +119,9 @@ kernel_args = [
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
   "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
                                     # patches/xnu/sirius-skip-rootauth.patch
+  "sirius_systemos_union=1",        # compose the SystemOS cryptex volume over "/" (read-only union)
+                                    # so /System/Library/Caches/com.apple.dyld exists; see
+                                    # patches/xnu/sirius-systemos-union.patch
   # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).
   #                                 # 2/3/4 additionally touch the branch clocks; on SDM710 that stalls the
   #                                 # bus and reboots the phone unless the clock sources are programmed first.

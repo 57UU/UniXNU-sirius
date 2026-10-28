@@ -7,12 +7,16 @@ schema_version = 1
 # Status vocabulary: planned, implemented, host-verified, device-verified, not-applicable.
 # Every claim here is backed by docs/HANDOFF.zh-CN.md, by the board sources listed in paths,
 # or by a device observation recorded with its commit.
+#
+# This file states what the port *is* and what is still open. The measurement values, the
+# judgements that later turned out wrong and the rules that keep the phone alive are in
+# docs/archive/HANDOFF-stages.zh-CN.md; the per-commit history is git log.
 
 [device]
 name = "sirius"
 soc = "SDM710"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Xiaomi Mi 8 SE running the UniXNU source kernel through its own U-Boot UEFI: entry, MMU, timer, PSCI, platform expert and the boot-progress console work on hardware; IOKit is blocked on AppleARMCPU claiming /cpus."
+summary = "Xiaomi Mi 8 SE running the UniXNU source kernel through its own U-Boot UEFI: entry, MMU, timer, PSCI, platform expert, IOKit, eMMC, APFS root, execve of launchd and 24 launchd syscalls work on hardware; userland stops at the dyld shared cache, which lives in the SystemOS cryptex volume and is being composed over / as a read-only union."
 
 [[area]]
 id = "configuration"
@@ -32,13 +36,10 @@ configuration = [
   "The prelink roots, slide, early security initializer and Apple device-tree identity come from the OS profile; the board adds sleep-disabled, the product model and the button set.",
 ]
 procedure = [
-  "From a UniXNU checkout: ./unixnu defconfig sirius_defconfig -D ../UniXNU-sirius.",
-  "Then ./unixnu fetch, ./unixnu status --json and ./unixnu tree; the output is out/sirius/ipados-17.7.11-21H461/sirius/.",
+  "From a UniXNU checkout: ./unixnu defconfig sirius_defconfig -D ../UniXNU-sirius, then ./unixnu fetch and ./unixnu status --json.",
   "Compile the hardware tree through the payload step (prototype: dtc -I dts -O dtb -i <soc>/dts dts/sirius.dts).",
 ]
 findings = [
-  "board.toml gained build-sirius-emmc.py in the archive list next to the USB console entry.",
-  "board.toml lists build-sirius-emmc.py alongside the other archives, because the SDCC1 probe is compiled the same way as the USB console and joins the same force-loaded archive.",
   "Format 2 replaced the hand-written ADT generator of the legacy port (scripts/make-sirius-adt.py) with a board DTS: the payload step compiles the tree and derives kernel.macho.adt from it.",
   "The arm-io base is derived from the exported nodes, not written by hand: the GIC at 0x17a00000 makes the window start at 0x17000000, which XNU reads as the SoC base.",
   "The legacy port set ipad_identity = true; in format 2 the same identity is the OS profile's [adt] tables, so the board only states its deviations.",
@@ -48,60 +49,66 @@ completion = [
   "The compiled hardware tree carries one contiguous memory range equal to payload.dram_size, eight enabled CPUs and a PSCI method.",
 ]
 limits = [
-  "The SoC profile is new: only the GIC, PSCI, counter and the timer INTID are shared, everything else is still board-local.",
-  "No device-verified configuration has been recorded against a commit of this repository yet; the evidence is the legacy port's handoff document.",
+  "The SoC profile carries only the GIC, PSCI, counter and the timer INTID; everything else is still board-local.",
 ]
 next_action = [
-  "Run status --json and tree against this repository and commit the resulting unixnu.lock.",
-  "Rebuild the payload from dts/sirius.dts and compare the generated ADT with the legacy one before the next hardware boot.",
+  "A kit source added to package/ needs its build-<name>.py recipe and a [kernel] archives entry, or the kernel links without it.",
 ]
 evidence = [
-  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Hardware values, the boot chain and the bring-up history of the legacy port, from which this configuration is carried over." },
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Board description, the profiles it selects and the ADT it generates." },
 ]
 
 [[area]]
 id = "firmware"
 status = "implemented"
 components = ["DarwinBoot"]
-paths = ["scripts/make-uboot-payload.py", "drivers/DarwinBoot/**"]
+paths = ["scripts/make-uboot-payload.py", "drivers/DarwinBoot/**", ".gitmodules", "uboot/**", "efi/**"]
 inputs = [
-  "The device runs sirius-distro (mainline Linux) and its boot partition carries U-Boot 2026.07 with EFI_LOADER, the UEFI boot manager, GOP through vidconsole and EFI block volumes over FAT.",
-  "UniXNU.efi is built on the host by ./unixnu build package; DarwinBoot.efi is built from drivers/DarwinBoot.",
-  "The payload volume goes to the unused vendor partition mmcblk0p80 (3 GiB) and is selected by a marker file.",
+  "The device runs sirius-distro (mainline Linux) and its boot partition carries U-Boot 2026.07 (github.com/57UU/u-boot, branch sirius/v2.0, pinned to a2a847b1a84) with EFI_LOADER, the UEFI boot manager, GOP through vidconsole and EFI block volumes over FAT.",
+  "UniXNU.efi is built on the host by ./unixnu build package from the vendored EDK II package (efi/, framework commit f85b5a6); DarwinBoot.efi is built from drivers/DarwinBoot.",
+  "The payload volume goes to the unused vendor partition mmcblk0p80 (3 GiB) and is selected by a marker file. Chain: ABL -> U-Boot -> UEFI -> UniXNU.efi -> DarwinBoot.efi -> XNU.",
 ]
 configuration = [
-  "board.toml has no [firmware] table: there is no Mu-Silicium firmware and no boot image on this port.",
-  "[payload] loader = \"payload\" makes the generated unixnu.toml load Payloads/DarwinBoot.efi as a [[driver]] instead of expecting it in the firmware volume.",
+  "board.toml has no [firmware] table: there is no Mu-Silicium firmware and no boot image on this port. [payload] loader = \"payload\" makes the generated unixnu.toml load Payloads/DarwinBoot.efi as a [[driver]] instead of expecting it in a firmware volume.",
+  "uboot/src is a shallow submodule at branch sirius/v2.0; uboot/unixnu-sirius.env is the board's stock default environment plus unixnu_boot/unixnu_check/unixnu_arm, the bootmenu entry they need and the bootcmd chain; uboot/build.sh builds boot-unixnu.img from the two.",
   "scripts/make-uboot-payload.py adds \\EFI\\BOOT\\BOOTAA64.EFI (UniXNU.efi) and the DarwinBoot.efi driver to the payload FAT volume.",
 ]
 procedure = [
-  "fastboot flash boot the U-Boot image, fastboot flash vendor the finished payload volume, then select the UniXNU menu entry in U-Boot.",
-  "U-Boot boots UniXNU when /EFI/UniXNU/BOOTUNIXNU exists on the vendor partition and boots Linux otherwise.",
+  "git submodule update --init --depth 1 uboot/src, then uboot/build.sh (needs CROSS_COMPILE and mkbootimg); fastboot flash boot that image, fastboot flash vendor the payload finished by make-uboot-payload.py --marker.",
+  "U-Boot boots UniXNU when /EFI/UniXNU/BOOTUNIXNU exists on the vendor partition and boots Linux otherwise; recovery is sirius-distro's build/boot.img, which ignores the marker.",
 ]
 findings = [
-  "The eMMC work adds no firmware component: the payload still boots through U-Boot with the same marker file.",
-  "U-Boot's UEFI services are enough for UniXNU, DarwinBoot and XNU: no Mu-Silicium platform port is needed for this board.",
-  "DarwinBoot's GIC-500 pre-configuration (the iBoot role) is what lets the kernel pass lockdown and start kexts on this SoC.",
-  "The pre-configuration must not enable the EL1 virtual timer PPI early: on SDM710 that is INTID 19 and it fires before ArmCpu installs its handler.",
+  "U-Boot needs no source change: its UEFI services are enough for UniXNU, DarwinBoot and XNU, so no Mu-Silicium platform port is needed for this board and the boot chain is environment text.",
+  "DarwinBoot's GIC-500 pre-configuration (the iBoot role) is what lets the kernel pass lockdown and start kexts on this SoC; it must not enable the EL1 virtual timer PPI early, because on SDM710 that is INTID 19 and it fires before ArmCpu installs its handler.",
+  "The payload finisher also rewrites AppleARMCPU's IONameMatch from cpu to xpu (equal length, nothing moves) so the kernelcache personality stops claiming this board's /cpus.",
+  "mmc 0:50 is a hexadecimal partition number (0x50 = 80 = the vendor partition); 0:80 is read as 0x80 = 128 and fails with Invalid partition 128, and bootflow scan cannot find p80 because it stops after the first 30 partitions.",
+  "U-Boot's own fastboot answers the whole getvar dialogue but flashing the vendor partition hangs: fastboot_tx_write() cancels the IN request before every queue and stock 2026.07 never received the dwc3 ENDTRANSFER/dequeue rework, so that cancel can strand a TRB the controller still owns. Writing the BCB command uboot-fastboot does enter it, so the missing half is the PMIC spare ABL reads, which needs CONFIG_CMD_PMIC and a verified pmic device name.",
+  "Because unixnu_arm arms the BCB on every UniXNU boot, a fastboot flash followed by reboot usually lands in U-Boot's own fastboot (product mtp, version-bootloader U-Boot ...) instead of UniXNU; fastboot erase misc plus reboot puts the next start back in UniXNU, which scripts/flash-when-fastboot.py does automatically.",
 ]
 completion = [
-  "U-Boot starts UniXNU from the FAT volume, the menu lists the xnu entry, and DarwinBoot hands control to the kernel with the device tree, framebuffer and command line.",
+  "uboot/build.sh reproduces boot-unixnu.img from a fresh clone; with the marker in the payload U-Boot starts UniXNU.efi, and without it the phone boots Linux.",
+  "The payload volume holds UniXNU.efi, DarwinBoot.efi, kernel.macho, kernel.macho.trustcache and the marker, and DarwinBoot hands control to the kernel with the device tree, framebuffer and command line.",
 ]
 limits = [
   "The boot chain is U-Boot specific: it is not reproducible with the Mu-Silicium flow of the other ports and is not covered by ./unixnu firmware or ./unixnu bootimg.",
+  "The EDK II package is a copy, not a submodule: keeping it in step with the framework is a manual diff of package/. The U-Boot submodule is shallow and pinned by commit.",
 ]
 next_action = [
-  "Keep the U-Boot side (sirius-distro) pinned by revision in the handoff document; it is the firmware for this port.",
+  "Keep the U-Boot side (sirius-distro) pinned by revision; it is the firmware for this port.",
+  "Test the f_fastboot dequeue removal end to end: after a power cycle, flash boot from U-Boot's own fastboot, so a hung run comes back to a usable fastboot without the chord.",
+  "Build UniXNU.efi from efi/ once and compare it with the framework's output, so the vendored copy is known good rather than assumed.",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Boot-chain diagram, the marker-file boot rule and the DarwinBoot GIC pre-configuration rationale." },
+  { kind = "source", reference = "uboot/README.md", result = "The U-Boot build recipe, the four environment lines that add the UniXNU chain, and the partition/short-scan traps." },
+  { kind = "source", reference = "efi/README.md", result = "Provenance of the vendored EDK II package (framework commit f85b5a6) and what the payload takes from it." },
 ]
 
 [[area]]
 id = "cpu"
 status = "implemented"
 components = ["ArmCpu"]
-paths = ["drivers/ArmCpu/**",  "dts/sirius.dts"]
+paths = ["drivers/ArmCpu/**", "dts/sirius.dts"]
 inputs = [
   "Eight Kryo 360 cores at Affinity1 0x000..0x700, boot CPU cpu0; cpu0-5 Cortex-A55, cpu6-7 Cortex-A75.",
   "GIC-500 distributor 0x17a00000/0x10000, redistributor 0x17a60000/0x100000, stride 0x20000.",
@@ -113,22 +120,20 @@ configuration = [
   "drivers/ArmCpu/ArmCpu.cpp is the board copy of the component: it adds the non-Apple timer INTID, the /cpus probe counters and the sheng-smp claim path.",
 ]
 procedure = [
-  "Build the kernel, then read the boot-progress TOPO line to confirm the topology and the probe decision.",
+  "Build the kernel, then read the boot-progress TOPO and PROBE rows to confirm the topology and the probe decision.",
 ]
 findings = [
-  "The eMMC bring-up does not touch the CPU selection or the ArmCpu driver; board.toml only gained an archive entry.",
   "The boot-progress TOPO row confirms the kernel topology on hardware: boot=0 max=7 nums=01234567.",
   "With sheng-smp=1 the native ArmCpu claims every /cpus nub; without it the kernelcache AppleARMCPU takes the nubs and panics with \"CPU configuration in device tree is invalid\" because it requires /cpus/max_cpus.",
-  "AppleARMCPU still wins the nubs at the current stage, which is the open IOKit blocker.",
 ]
 completion = [
   "Every enabled CPU reaches its entry checkpoint and timer/IPI handling works on each enabled CPU with the board INTID.",
 ]
 limits = [
-  "IOKit attach of the native ArmCpu is not yet proven; the last trusted snapshot shows AppleARMCPU holding /cpus.",
+  "The timer INTID and the claim path are board facts; a board with an Apple-shaped /cpus would not need sheng-smp=1.",
 ]
 next_action = [
-  "Stop pre-enabling the timer PPI in DarwinBoot, re-read the probe row, and confirm ArmCpu installs its IRQ handler before the timer fires.",
+  "Record the TOPO and PROBE rows of every CPU-side change together with the kernel hash, so a regression names the CPU it came from.",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Timer INTID measurement, the TOPO checkpoint and the AppleARMCPU panic analysis." },
@@ -151,17 +156,16 @@ procedure = [
   "Read the MEM row of the boot-progress panel and compare it with the DTS range.",
 ]
 findings = [
-  "The eMMC probe maps two register windows (GCC and SDCC1) and reads only; the payload memory map is unchanged.",
   "The single contiguous range is what DarwinBoot's window allocation and the ADT handoff require; the two physical banks are described as one range on purpose.",
 ]
 completion = [
   "The kernel memory map accounts for every handoff region, and no DMA engine or framebuffer range overlaps the kernel window.",
 ]
 limits = [
-  "DMA and SMMU behaviour is untested: there is no storage or GPU driver yet.",
+  "SMMU behaviour is read only: the boot chain leaves it disabled and writing S2CR hung the SoC, so no DMA engine is brought up yet.",
 ]
 next_action = [
-  "Capture the kernel's memory map row after the next IOKit break-through and reconcile it with the DTS.",
+  "Reconcile the memory map of the next boot with the DTS once an engine needs real DMA windows.",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "DRAM split, framebuffer address and the memory-map checkpoint." },
@@ -182,47 +186,31 @@ configuration = [
 ]
 procedure = [
   "Build the kernel with that archive list: the driver's storage imports are bound at the prelink slide and archived with it.",
-  "Read the evidence off the boot-progress console: the probe prints the GPT rows, the driver logs the block count it publishes.",
+  "Read the evidence off the USB console: the probe prints the GPT rows, the driver the block count and the media table it publishes.",
 ]
 findings = [
-  "The data path works: ADMA2 reads return EFI PART from LBA 1, the GPT header parses (entries_lba=2, count=84, size=128) and 81 partitions with geometry are listed; boot 1179648..1310719, vendor 11010048..17301503, userdata 17301504..122142686.",
-  "Five conditions had to hold at once: the RCG2 encoding (CFG=0x2017, M=1, N=0xfc, D=0xfb), 1.8 V I/O (the board's vqmmc), the 32-bit interrupt/error map at 0x30/0x32/0x36, the ADMA descriptor address at 0x58/0x5c rather than 0x00, and cache maintenance (flush_dcache64) because the engine reads memory and not the CPU cache.",
-  "SMMU is not the blocker: the boot chain leaves it disabled (scr0=0x00230406, bit0=0) and writing S2CR hung the SoC twice, so the driver only reads SMMU state.",
-  "IOStorageFamily is a kext of the original kernelcache, so the archive form of the driver left IOBlockStorageDevice undefined at the kernel link (ld: 'a missing vtable usually means the first non-inline virtual member function has no definition').",
-  "The prelink slides every component by a constant: extents[].va = original + slide for each segment and bindings[] carries new_site = site + slide, so the addresses the driver needs are the kernelcache's plus the slide.",
-  "The dispatch table is identifiable without a live snapshot: of the 190 pinned slot names 176 are kernel exports, exactly one __DATA_CONST table matches all of them, the other 14 slots point at the kext's own BRK traps, the single constructor that stores table+16 forwards to the actual IOService constructor and the base destructor resolves to IOService's.",
-  "Eleven imports are bound (dispatch table, metaclass, protected constructor, base destructor and seven methods); when the prelinked kernel exists the derivation also checks it holds the same constructor at the slid address, so a wrong slide cannot pass.",
-  "The SHNGROOT manifest at userdata LBA 17301504 describes two windows (OS 17303552+11870275, SystemOS 29175808+6451200); publishing them as their own IOBlockStorageDevice makes APFS mount disk0, disk1s1 and disk2s1 (the OS volume DawnUpdate21H461.J120J121J207J208OS) and bsd_init completes.",
-  "A thread_call has a single pending slot: thread_call_enter1 neither queues a second call nor preserves the first parameter, so passing requests there silently dropped completions and any caller waiting on such a request hung with the kernel otherwise idle. Requests now sit on a software queue that one drain services.",
-  "Completing a block request from another thread deadlocks this stack the same way the drop did (reads and blocks frozen at the same point, no error, the drain asleep), so doAsyncReadWrite completes inline by default.",
-  "The recurring 'Taking non-sleepable RW lock with preemption enabled' panic is the trust cache runtime lock, not a pmap lock: lock 0xfffffff007b3b548 resolves to _trust_cache_rt_lock and the first caller to _query_trust_cache+0x70. trust_cache_runtime_init() is not compiled into this build, so the lock word reads all zeros (lck_rw_can_sleep == false) and lck_rw_lock_shared panics at lock_rw.c:1400; the driver's heartbeat now mirrors the panic text into the USB ring, which is how the addresses were read.",
-  "With the runtime guarded to answer KERN_NOT_FOUND, AMFI refuses every image and the kernel kills launchd with namespace 9 (OS_REASON_EXEC) code 8 (EXEC_EXIT_REASON_SECURITY_POLICY); recording and clearing that answer with sirius-skip-cs=1 makes exec_activate_image return 0, so execve of /sbin/launchd completes.",
-  "The card clock can be raised from the identification rate with the same table U-Boot programs: the RCG divider field holds (div * 2 - 1) and DUAL_EDGE is set when n != m, so the 400 kHz entry (CXO, div 12, m 1, n 4) is CFG 0x2017 and 25 MHz (GPLL0_EVEN, div 6, m 1, n 2) is CFG 0x260B; 25 MHz stays inside default speed, 50 MHz would need the CMD6 high-speed switch.",
-  "With the original trust-cache bundle in the payload and the runtime initialised at startup, AMFI answers the exec policy itself: the boot prints execve activate 0 without the sirius-skip-cs bypass line, so the Apple-signed launchd is trusted rather than skipped into.",
-  "The 25 MHz switch reads the GPT signature back at the new rate on device (the probe prints EMMC clock25=ok), so the RCG encoding above is confirmed rather than assumed.",
-  "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
-  "The init exec returns 0 and then nothing asks the driver for another block: reads stop at 0x10D (269 requests, 0x98F blocks) while the heartbeat keeps counting, so the wait is past the storage stack. The caller side is now instrumented (sirius-post-exec-trace.patch): the exec thread-switch state, every new user thread start at thread_bootstrap_return, the first pid 1 syscalls with their returns, each bsd_ast for pid 1 and the first user faults after the exec, all written to the same USB ring and summarised by the heartbeat.",
-  "The caller-side probe closes that question: the pid 1 thread stays in load_init_program_at_path, inside copyout() of the launchd path, and takes 62.6 million faults in about a minute. The stall is a fault loop in the exec path, not a storage wait.",
+  "Five conditions had to hold at once before the data path moved: the RCG2 encoding (CFG 0x2017 at 400 kHz, 0x260B at 25 MHz), 1.8 V I/O, the 32-bit interrupt/error map at 0x30/0x32/0x36, the ADMA descriptor address at 0x58/0x5c rather than 0x00, and cache maintenance because the engine reads memory and not the CPU cache.",
+  "IOStorageFamily is a kext of the original kernelcache, so the driver cannot link against it as an archive member: scripts/derive-storage-bindings.py identifies its dispatch table in the pinned kernelcache (only one __DATA_CONST table matches all 176 kernel-exported slot names) and binds the eleven imports at the prelink slide, so a wrong slide fails the derivation instead of the device.",
+  "The SHNGROOT manifest at userdata LBA 17301504 describes the OS and SystemOS windows; publishing them as their own IOBlockStorageDevice makes APFS mount disk0, disk1s1 and disk2s1 (the OS volume DawnUpdate21H461.J120J121J207J208OS) and bsd_init completes.",
+  "Every block device must transfer single-flight and without a sleeping lock (APFS mounts several volumes at once while the staging buffer and ADMA table are global), and doAsyncReadWrite has to complete inline: another thread, or a thread_call, silently drops or deadlocks completions. Requests now sit on a software queue that one drain services.",
+  "The card clock is at 25 MHz (RCG CFG 0x260B, verified by reading the GPT signature back); 50 MHz would need the CMD6 high-speed switch.",
+  "The volume this driver publishes as root is the OS window, which has launchd and dyld but no dyld shared cache; the cache belongs to the SystemOS window, so userland needs that window mounted rather than a storage change.",
 ]
 completion = [
   "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
 ]
 limits = [
   "Read-only: the transfer path has no write command and reportWriteProtection() says so.",
-  "After the successful execve of launchd the driver receives no further requests: the remaining wait is past the storage stack, not in it.",
-  "The card clock is still the identification rate (400 kHz, about 550 blocks/s measured); nothing raises it to high speed yet.",
-  "The exec policy no longer needs a boot argument: the payload carries the original trust-cache bundle and the kernel initialises its runtime at startup. The sirius-skip-cs bypass is kept in the patch series, unused, in case a future image falls outside the bundle.",
+  "The card clock is 25 MHz; nothing switches it into high speed yet.",
 ]
 next_action = [
-  "Verify the 25 MHz switch (sirius_emmc_hs=1) reads the GPT signature back and measure the new block rate; then decide whether the CMD6 high-speed switch to 50 MHz is worth it.",
+  "Decide whether the CMD6 high-speed switch to 50 MHz is worth it now that userland is the bottleneck, and keep the 25 MHz path as the fallback.",
   "Keep the trust-cache bundle in step with the OS build when the IPSW changes (its sha256 is pinned in board.toml [payload] trust_cache_sha256).",
-  "Boot the post-exec-probe kernel and read the counters: two SIRIUS user thread start lines mean the exec'd thread was scheduled, and the last init syscall enter without a matching return names the call it never comes back from.",
-  "Raise the SDCC1 clock out of identification speed (GCC root clock plus the card's high-speed mode).",
 ]
 evidence = [
-  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-obs.img; fastboot reboot; capture-usb-console.py --duration 240", revision = "d867b1d6498dc4d0f4ae4e18060762dcae6c5847", result = "NativeEmmc starts from bsd_init, publishes 0x747BFDF blocks of 512 bytes, and IOStorageFamily reads block 0, block 1 and block 2 with 21 sectors (the 84 GPT entries) through doAsyncReadWrite; the heartbeat keeps ticking with the transfer count fixed at seven, so the boot ends at the root-device wait. Log in docs/HANDOFF.zh-CN.md." },
-  { kind = "host", reference = "docs/HANDOFF.zh-CN.md", command = "./scripts/xnu-container.sh run bash -lc './unixnu build kernel --skip-setup -D ../sirius'", revision = "a47f0d6b4615c3cdebf92102400a1bc302eb6d73", result = "The kernel links with NativeEmmc in the image (kernel.macho sha256 372820eb1b2cd9ecee15d769d1296771d0c8141c2681626d54651a62473446b8); the GitHub macOS runner builds the same archive (kernel workflow run 40386710258)." },
-  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-if.img; fastboot reboot; capture-usb-console.py --duration 220", revision = "bb812428dccd1f676455813ad198ed2bee4a8e3e", result = "APFS mounts disk0/disk1s1/disk2s1, bsd_init completes, execve of /sbin/launchd prints activate enter, namei 0, 'exec policy answered 1, skipped by boot arg' and finally 'execve activate 0'; the driver then has no transfer in flight and the read count stops at 0x10D, so the remaining wait is past storage." },
+  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-obs.img; fastboot reboot; capture-usb-console.py --duration 240", revision = "d867b1d6498dc4d0f4ae4e18060762dcae6c5847", result = "NativeEmmc starts from bsd_init, publishes 0x747BFDF blocks of 512 bytes, and IOStorageFamily reads block 0, block 1 and block 2 with 21 sectors (the 84 GPT entries) through doAsyncReadWrite." },
+  { kind = "host", reference = "docs/HANDOFF.zh-CN.md", command = "./scripts/xnu-container.sh run bash -lc './unixnu build kernel --skip-setup -D ../sirius'", revision = "a47f0d6b4615c3cdebf92102400a1bc302eb6d73", result = "The kernel links with NativeEmmc in the image (kernel.macho sha256 372820eb1b2cd9ecee15d769d1296771d0c8141c2681626d54651a62473446b8)." },
+  { kind = "device", reference = "docs/HANDOFF.zh-CN.md", command = "fastboot flash vendor sirius-if.img; fastboot reboot; capture-usb-console.py --duration 220", revision = "bb812428dccd1f676455813ad198ed2bee4a8e3e", result = "APFS mounts disk0/disk1s1/disk2s1, bsd_init completes and execve of /sbin/launchd prints activate enter, namei 0 and finally execve activate 0." },
   { kind = "source", reference = "package/sirius_emmc.c", result = "SDCC1 bring-up, the ADMA2 read path and the GPT parse." },
 ]
 
@@ -240,13 +228,12 @@ configuration = [
   "package/Font.h is vendored from Mu-Silicium, so the archive builds without a UEFI checkout.",
 ]
 procedure = [
-  "Build kernel, payload and volume, boot, and read the panel: stage lines, TOPO, PROBE, MEM and panic text.",
+  "Build kernel, payload and volume, boot, and read the panel: stage lines, TOPO, PROBE, MEM, EMMC and USB rows, and panic text.",
 ]
 findings = [
-  "The panel gained an EMMC row (step, version, capabilities, state, clock, power, clock-branch halts) next to the USB row, so the storage bring-up is visible without a serial link.",
-  "The USB row (drawn by this panel) labels its six values after what they now carry - step, txev, rxev, chars, echo, poll - because they were first wired to register names and had drifted.",
-  "The panel is the readable kernel log of this port: it renders the console, the TOPO/PROBE rows and panic() output.",
-  "Since the panic snapshot patch the panel re-renders at panic time, so the rows are not a stale frame.",
+  "The panel is the readable kernel log of this port: it renders the console, the TOPO/PROBE/MEM rows and panic() output, and since the panic snapshot patch it re-renders at panic time so the rows are not a stale frame.",
+  "Its rows cannot touch kernel state that is not initialised yet: boot_progress_init() draws before ml_parse_cpu_topology(), so the TOPO row guards topology_info against NULL.",
+  "A frozen panel is not proof of a hang: the panel repaints from the timer interrupt, so before ArmCpu enables the timer PPI the last painted frame stays while the kernel still runs.",
 ]
 completion = [
   "A known frame appears with correct geometry, and the kernel console and panic output stay readable on the panel.",
@@ -258,160 +245,164 @@ next_action = [
   "Keep the panel as the diagnostic surface until a display provider exists, and record each new row it prints.",
 ]
 evidence = [
-  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Boot-progress panel behaviour, the panic snapshot fix and the geometry of the U-Boot framebuffer." },
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Panel layout, row meanings and the panic-time snapshot." },
 ]
 
 [[area]]
 id = "input"
 status = "planned"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md"]
+paths = ["board.toml"]
 inputs = [
-  "The board has no Home button; volume keys are reported by the button node of the ADT.",
-  "The touch controller is not identified for this unit yet.",
+  "No touch or key driver on this port; the board advertises a three-button set (hold, voldown, volup) with home-button-type 2, which is enough for BSPlatform to boot without an input driver.",
 ]
 configuration = [
-  "board.toml writes [adt.buttons] with hold, voldown, volup and home-button-type = 2.",
+  "[adt.buttons] publishes the button set and [adt.defaults.u32] sets sleep-disabled = 1, because there is no suspend/resume path.",
 ]
 procedure = [
-  "Follow the input guide once a touch controller is known, then select an implementation.",
+  "Add the SPI/I2C controller and the touch device to dts/sirius.dts, then confirm the panel reports input nodes.",
 ]
 findings = [
-  "The SDCC1 probe does not touch the ADT buttons, so the input row and its hold/voldown/volup mapping are unchanged.",
-  "No input component is selected; the button node exists so that BSPlatform and MobileGestalt read a coherent product.",
+  "The buttons are device-tree identity only: no input hardware driver exists, and none is needed to reach userland.",
 ]
 completion = [
-  "Touches map to the display with stable contacts and the volume keys produce the expected HID reports.",
+  "A touch or key event reaches userland through IOHIDFamily.",
 ]
 limits = [
-  "No touch support and no IOHIDDevice provider.",
+  "No input hardware driver: volume and power keys work through the boot chain, not through XNU.",
 ]
 next_action = [
-  "Identify the touch controller from the vendor DTS and the panel firmware.",
+  "Start with the volume keys through the PMIC/GPIO path before the touch controller.",
 ]
-evidence = []
+evidence = [
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Button set and sleep-disabled defaults in board.toml." },
+]
 
 [[area]]
 id = "gpu"
 status = "planned"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md"]
+paths = ["board.toml"]
 inputs = [
-  "Adreno 616 with the SDM710 GPU firmware; no GPU component is selected yet.",
+  "Adreno 616 behind the apps SMMU, which the boot chain leaves disabled; only SMMU read-back exists on this port.",
 ]
 configuration = [
-  "Nothing is configured: the CPU renders the boot-progress panel through the firmware framebuffer.",
+  "No GPU component is selected; CONFIG_XNU_NATIVE_MOBILE_DISPLAY and the legacy display are off.",
 ]
 procedure = [
-  "Follow the GPU guide to evaluate Adreno740/AdrenoMetal for this revision; the A616 is not the A740 the component targets.",
+  "Bring up the display provider first, then the GPU IOMMU windows and the firmware upload.",
 ]
 findings = [
-  "The Adreno family components in the catalog target the A740 of SM8550; a different implementation would be needed here.",
+  "Writing SMMU registers hangs this SoC, so any GPU path starts with a read-only audit of what the boot chain programmed.",
 ]
 completion = [
-  "GPU submissions complete, fences work and a known image renders.",
+  "The render server owns a Metal device and presents to the panel.",
 ]
 limits = [
-  "No GPU bring-up has been attempted on this port.",
+  "Not started: no display provider, no SMMU windows, no firmware upload.",
 ]
 next_action = [
-  "Decide whether an A616 implementation is in scope after IOKit and storage; do not assume the A740 path applies.",
+  "Defer until the display provider exists; both depend on the same SMMU work.",
 ]
-evidence = []
+evidence = [
+  { kind = "source", reference = "docs/archive/HANDOFF-design-notes.zh-CN.md", result = "The SMMU warning that governs any GPU or DMA bring-up on this board." },
+]
 
 [[area]]
 id = "network"
 status = "planned"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md"]
+paths = ["board.toml"]
 inputs = [
-  "The Wi-Fi chip of this unit is not identified in the port record yet.",
+  "WiFi is the WCN3990 over the integrated modem subsystem; there is no PCIe or USB network device on this board.",
 ]
 configuration = [
-  "No network component is selected.",
+  "No network component is selected and the kernel command line carries no network behaviour.",
 ]
 procedure = [
-  "Follow the network guide once the chip and its firmware are known.",
+  "Start from the modem subsystem's QMI transport, not from an ethernet driver.",
 ]
 findings = [
-  "No network work has started; the first console image does not need it.",
+  "Userland reaches the home screen without the network, so this is not on the critical path.",
 ]
 completion = [
-  "Scanning, association and sustained traffic pass with the selected firmware.",
+  "A Darwin network interface publishes an address.",
 ]
 limits = [
-  "No network support at any layer.",
+  "Not started, and blocked behind the same SMMU work as the GPU.",
 ]
 next_action = [
-  "Identify the WCN chip from the vendor DTS and the firmware partition before selecting a driver.",
+  "Defer until userland is idle on the home screen.",
 ]
-evidence = []
+evidence = [
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "The port reaches userland without a network driver." },
+]
 
 [[area]]
 id = "audio"
 status = "planned"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md"]
+paths = ["board.toml"]
 inputs = [
-  "No audio path is documented for this unit yet.",
+  "WCD9341 codec and the ADSP-based audio path; neither is described in dts/sirius.dts.",
 ]
 configuration = [
-  "No audio component is selected.",
+  "No audio component is selected and no device-tree node is exported for the codec or the ADSP.",
 ]
 procedure = [
-  "Follow the audio guide once the codec and DSP path are known.",
+  "Describe the codec and the LPASS memory windows, then bring up the ADSP firmware load.",
 ]
 findings = [
-  "No audio work has started.",
+  "Audio is not needed for bring-up: the port boots and starts launchd without it.",
 ]
 completion = [
-  "Each declared route carries the selected format through playback or capture.",
+  "coreaudiod starts and a route plays through the codec.",
 ]
 limits = [
-  "No audio support at any layer.",
+  "Not started: no codec node, no ADSP firmware path, no SMMU windows.",
 ]
 next_action = [
-  "Inventory the codec and the DSP layout from the vendor tree.",
+  "Defer behind display and the Data seed.",
 ]
-evidence = []
+evidence = [
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "The current boot path does not touch audio." },
+]
 
 [[area]]
 id = "power"
 status = "planned"
 components = []
-paths = ["dts/sirius.dts"]
+paths = ["board.toml"]
 inputs = [
-  "No suspend/resume path exists; the boot-progress panel is the only power-facing behaviour so far.",
+  "PM660/PM660L over SPMI: the boot chain leaves them programmed and XNU does not re-program them. PON_SOFT_RB_SPARE (0x8f in the PMIC, 0x88f in U-Boot's encoding) is what ABL reads to pick the next boot target.",
 ]
 configuration = [
-  "board.toml writes [adt.defaults] sleep-disabled = 1 so the CPU does not park forever.",
-  "PSCI is declared in the SoC DTSI and used for reset and secondary-core start.",
+  "[adt.defaults.u32] sets sleep-disabled = 1 so the CPU never parks waiting for a suspend implementation.",
 ]
 procedure = [
-  "Follow the power guide to add the PMIC and battery controls once the platform expert is stable.",
+  "Read the PMIC state through a read-only probe before writing anything, then add the PMIC command to U-Boot for the automatic-fastboot route.",
 ]
 findings = [
-  "The eMMC probe does not vote any RPMH resource; it re-enables the GCC SDCC1 branches that the boot chain had already set.",
-  "Reset works through PSCI (the stage-3 reset loop proved it).",
+  "No regulator or power-domain driver exists in the kernel: the board runs on the programming the boot chain left behind.",
 ]
 completion = [
-  "Declared power controls and battery readings match observations and sleep/resume restores the dependent peripherals.",
+  "The kernel owns the regulators it needs and the boot target can be armed from software.",
 ]
 limits = [
-  "No battery reporting, no CPU frequency policy and no PMIC driver.",
+  "Sleep and resume are disabled rather than implemented.",
 ]
 next_action = [
-  "Defer until IOKit and storage are stable; keep sleep-disabled until a resume path exists.",
+  "Add CONFIG_CMD_PMIC to U-Boot and confirm the pmic device name, the remaining half of the automatic-fastboot route.",
 ]
 evidence = [
-  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "PSCI reset evidence and the reason sleep is disabled." },
+  { kind = "source", reference = "uboot/README.md", result = "The PMIC spare ABL reads and why it is the missing half of the fastboot route." },
 ]
 
 [[area]]
 id = "packaging"
 status = "implemented"
 components = ["XnuPrelink"]
-paths = [ "scripts/make-uboot-payload.py",  "scripts/build-xnu-4k-baseline.sh",  "dts/**"]
+paths = ["scripts/make-uboot-payload.py", "scripts/build-xnu-4k-baseline.sh", "dts/**"]
 inputs = [
   "The payload FAT volume is the flashed artifact of this port; there is no boot.img.",
   "The prelink inputs (kernel path, roots, slide, early security initializer) come from the OS profile; the board does not override them.",
@@ -421,38 +412,26 @@ configuration = [
   "[payload.adt] keeps only chip_id: the platform seed is supplied per build with --unique-chip-id when the userland stages need it.",
 ]
 procedure = [
-  "./unixnu build kernel, ./unixnu build package, then bash scripts/build-darwinboot.sh (or the CI workflow), ./unixnu build payload, and finally make-uboot-payload.py --output the volume to flash.",
+  "./unixnu build kernel (container or macOS), ./unixnu build package, bash <tree>/scripts/build-darwinboot.sh when the driver fork changes, ./unixnu build payload --trust-cache <bundle>, and finally make-uboot-payload.py --marker --output the volume to flash.",
 ]
 findings = [
-  "The eMMC probe ships in the same force-loaded archive as the USB console, so the package list and payload layout are unchanged.",
-  "Format 2 generates kernel.macho.adt from the DTS, so the legacy ADT script is retired; make-uboot-payload.py still finishes the volume because U-Boot needs the EFI binaries inside it.",
-  "scripts/build-xnu-4k-baseline.sh is a copy of the UniXNU script with one board deviation: the boot-progress interlock only requires the source crypto provider.",
-  "The legacy build applied patches/xnu/*.patch by glob (56 files); format 2 applies only what the series list names, and the ARM64 and OS series assume the two files they omit are present. native-smp-secondary.patch sets MAX_CPUS 8 and Affinity1 core numbering; sheng-platform-power.patch supplies the bsd_init.c block that zzz-boot-progress.patch quotes as context (CONFIG_XNU_SHENG_PMGR is off, so its code compiles to nothing). Both now live in the sdm710 SoC series, which applies before the OS series.",
-  "The first format 2 kernel build on Linux failed at the last patch, zzz-boot-progress.patch, with a bsd_init.c context mismatch: the missing piece was sheng-platform-power.patch, not the moved native-smp-secondary. With both in the SoC series the whole series applies and the kernel prelinks: kernel.macho 50 MB, __TEXT 0xfffffff007004000, 30 kernelcache components, 69294 bindings.",
-  "The kernel step also runs on Linux through UniXNU's toolchain installer, which builds a patched LLVM, cctools-port ld64, MIG, iig and lzfse. That installer writes /opt/unixnu-linux, /usr/bin shims and distribution packages, so this port runs it inside a Podman image (containers/xnu-linux/) and leaves the host untouched. The alternative, Allenwdk/xnu-linux-toolchain, uses the system clang with portable-kalloc-type-builtins.patch and cctools-port, but needs a path-layout adapter for the driver's checks.",
-  "The first flashed build hung on hardware with the entry probe's blue bar and no magenta bar. The cause was a defconfig override, not the kernel sources: CONFIG_XNU_NATIVE_ARCH_TIMER=n. build-xnu-4k-baseline.sh sets NATIVE_ARCH_TIMER=${XNU_NATIVE_ARCH_TIMER:-${XNU_ARMCPU:-0}}, so the legacy build ran with 1; at 0, architectural-timer-entry.patch compiles the BCM2837 local interrupt router write (0x40000040 + cpu*4, Raspberry Pi local peripherals) into start.s. SDM710 has nothing at that address, and the store aborts before the MMU is on. The defconfig now leaves the ARM64 profile value (y) alone and documents why.",
-  "Diagnosis method worth repeating: the legacy kernel from payload-full.img boots with this repository's new UniXNU.efi, DarwinBoot.efi and DTS-generated ADT (it reaches _sleh_irq and panics on the known early timer PPI), so the EFI side and the ADT are sound and the regression is in the kernel build. Comparing the two kernels' start_first_cpu bodies then showed the extra router write as the only semantic difference.",
-  "With the timer override removed the Linux-built kernel boots past the MMU on hardware: the boot-progress panel reports TOPO boot=0 max=7 nums=01234567, the console reaches IOKit (PE_init_iokit, IONVRAM initImageFormat) and then the CPU takes an IRQ it cannot dispatch. lr 0xfffffff00741754c is _sleh_irq+0x70, the same NULL per-CPU handler the legacy kernel hit.",
-  "That IRQ is DarwinBoot's early timer PPI. GIC_SGI_PPI_ENABLE included bit 19, so the EL1 virtual timer fired before ArmCpu::start installed the handler. DarwinBoot now enables SGIs 0..15 only and leaves INTID 19 to ArmCpu (armcpu-timer-intid=19), which is what the handoff's next step asked for.",
-  "With the timer PPI left to ArmCpu the next stop was AppleARMPlatform's CPU class: it matches cpu0..cpu7 because IODTPlatformExpert compares IONameMatch by prefix ('cpu' matches 'cpu0'), starts first, and panics with 'CPU configuration in device tree is invalid' (its AppleARMCPU.cpp validates max_cpus, cpu-id, interrupts and function-* properties that an Apple device tree carries). The native ArmCpu personality (IOPlatformDevice, probe score 2000) did not win that match even after probe() added 40000, so make-uboot-payload.py rewrites the AppleARMCPU IONameMatch from cpu to xpu in the personality plist inside kernel.macho (equal length, nothing moves).",
-  "A frozen panel is not proof of a hang: the panel repaints from the timer interrupt, so before ArmCpu enables the timer PPI the last painted second stays on screen while the kernel may still be running. Checkpoints (armcpu-panic=N, panics at entry/prepareGic/registration/controller/initCPU/registerService) are what distinguish the two.",
-  "ArmCpu::start then failed inside initDistributor: it re-ran the quiesce sequence (GICD_CTLR &= ~3, wait, restore with ARE) over the state DarwinBoot had already programmed, which clears the group enables and leaves the core with no interrupts at all; the boot then sits in IOKit matching with a frozen panel. The fix keeps the firmware state when GICD_CTLR already reports affinity routing plus group 1 and only quiesces the SPIs. After it the panel advances (time=31s, IRQ=1076) and the kernel reaches bsd_init with TOPO boot=0 max=7, PROBE calls=17 acc=8 num=7 reg=700 - eight CPUs online.",
-  "The next blocker is AMFI: 'AMFI: No PMGR?' @ConfigurationSettings.cpp:235. The unchanged target AMFI finds the PMGR through IOService::serviceMatching(\"ApplePMGRNub\") + waitForMatchingService, then reads the provider at nub+0x88 and calls its readAon/writeAon slots (OR bit 2). The original classes are ApplePMGR (storage 0x4b8a8) and ApplePMGRNub (0x740); UniXNU/scripts/audit-amfi-pmgr-contract.py pins the exact instructions. amfi_get_out_of_my_way=1 does not skip the check. Two routes remain: instantiate the original classes the way UniXNU-sheng does (OSKextLoadKextWithIdentifier + a generated OriginalPMGRABI.h + a published nub), or patch the AMFI block in the prelinked kernel.",
-  "AMFI is cleared without touching the target kernel: the nub helpers behind AMFI's readAon/writeAon return 0 when the provider stored at nub+0x88 is NULL, so publishing a real but provider-less ApplePMGRNub satisfies the latch (read 0, OR 4, write no-op). package/SiriusPmgr.cpp allocates the class through OSMetaClass::getMetaClassWithName + alloc + init, attaches it to the platform and registers it from the sheng_pmgr_run hook in bsd_init (CONFIG_XNU_SHENG_PMGR=1, sheng-pmgr=2), and its build script writes the archive to build/sheng-platform-power/libShengPlatformPower.a because build-xnu-4k-baseline.sh force-loads exactly that path.",
-  "With AMFI satisfied the boot passes bsd_init and stops at 'Failed to mount root device' @IOKitBSDInit.cpp:984 with 8 CPUs, IRQ=2145, 61 s of live uptime: the kernel now runs to the point where it needs a storage driver and a root filesystem, which this board does not have yet (no UFS or VirtIO block component, no APFS container on the payload volume).",
+  "The kernel step runs on Linux through UniXNU's toolchain installer inside a Podman image (containers/xnu-linux/), so the host stays untouched; the installer writes /opt/unixnu-linux and /usr/bin shims when run directly.",
+  "scripts/build-xnu-4k-baseline.sh is a copy of the UniXNU script with two board deviations: the boot-progress interlock requires only the source crypto provider, and the board patch series is applied before the shared one.",
+  "Format 2 applies only the patches the series list names, so native-smp-secondary.patch and sheng-platform-power.patch live in the sdm710 SoC series: without the second, zzz-boot-progress.patch loses its bsd_init.c context.",
+  "The defconfig must not override CONFIG_XNU_NATIVE_ARCH_TIMER to n: build-xnu-4k-baseline.sh derives NATIVE_ARCH_TIMER from XNU_ARMCPU, and at 0 the ARM64 series compiles the BCM2837 local interrupt router write into start.s, which faults on SDM710 before the MMU is on.",
+  "make-uboot-payload.py is what makes the volume bootable under U-Boot: it adds BOOTAA64.EFI and the DarwinBoot driver, writes the marker, and rewrites AppleARMCPU's IONameMatch in the prelinked kernel.",
 ]
 completion = [
   "The kernel prelinks against the pinned 21H461 kernelcache, the payload contains the kernel, the ADT and the DarwinBoot driver, and the flashed volume boots from U-Boot.",
 ]
 limits = [
-  "The kernel step needs macOS and Xcode, or the container image with UniXNU's Linux toolchain; the board script must be re-based on the upstream script when UniXNU changes it.",
+  "The board kernel script and the container image need re-basing when UniXNU changes them; the board copy is a fork and drifts silently otherwise.",
 ]
 next_action = [
-  "Run the new payload once and diff the generated ADT against the legacy one before flashing.",
-  "Boot the prelinked kernel on the phone and record the stage rows; the build side is now reproducible on Linux (container image, see downloads).",
+  "Keep the container image and scripts/build-xnu-4k-baseline.sh in step with UniXNU, and re-check the payload hash after every rebuild.",
 ]
 evidence = [
-  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Build and deploy loop, the CI kernel artifact and the payload layout on the vendor partition." },
+  { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Build-deploy loop, the payload layout and the prelink invariants." },
 ]
 
 [[area]]
@@ -461,102 +440,38 @@ status = "implemented"
 components = []
 paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "scripts/build-sirius-emmc.py"]
 inputs = [
-  "The panel and the serial console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
+  "The panel and the USB console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
 ]
 configuration = [
   "panic_screen = true patches the entry probe and the panic screen into the payload kernel.",
   "boot-progress=2 draws the kernel console lines; debug=0x14e keeps the debug output on.",
 ]
 procedure = [
-  "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
+  "Record the last checkpoint printed on the panel and in the USB log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
-  "A register write-and-read-back test is the next diagnostic for the eMMC data phase, because SDHCI_TRANSFER_MODE reads back 0x33 after writing 0x13, which separates a write the vendor layer ignores from a command that is never sent.",
-  "The eMMC probe reports every step (controller registers, the clock tree, the response registers around CMD0/CMD1 and each failure) into the USB console ring, which is how the card clock and CMD2 findings above were obtained without a photograph.",
-  "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
+  "The kernel console stops feeding the USB ring before bsd_init, so IOLog and printf never reach the host from a driver; every report writes the ring directly through sirius_usb_log_char().",
+  "The driver hands the ring over once per attach, but a host byte replays the whole ring, which is what makes capture-usb-console.py get the complete boot: an inline poll that breaks once the ring is drained, and nothing else, is the timing that works.",
+  "The panel repaints from the timer interrupt, so a frozen panel is not a hang; checkpoints (armcpu-panic=N) and the panic-time forced refresh are what distinguish the two.",
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
-  "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",
-  "The USB panel row names its fields after what they hold (step, txev, rxev, chars, echo, poll) instead of the register names they were first wired to, so a photograph can be read without the source.",
-  "The CDC console hands the console ring to the host once per attach: the pump timing that works (a short inline poll loop that breaks after the ring is drained) delivered the 3813-byte boot log on every attempt, while longer loops and a DTR-gated pump delivered nothing, so that timing is treated as load-bearing until the periodic path runs during bsd_init.",
-  "The post-exec wait is instrumented on the kernel side rather than through the driver: sirius-post-exec-trace.patch prints the exec thread-switch flags, every user thread start (from thread_bootstrap_return, so one line means the exec'd thread never ran and two mean it did), the first pid 1 syscalls with their returns, every bsd_ast for pid 1 and the first user faults after the exec, and the eMMC heartbeat prints the counters so one capture answers the question.",
-  "The exec does not stall after activate: load_init_program prints the scratch page (0x1000, the first free page of the init map), then the init thread is inside copyout() and takes 62,673,044 faults in about a minute while it stays TH_RUN, so the wait is a tight fault-retry loop, not a sleep.",
-  "PAN is the cause, and the earlier 'PAN is not the cause' entry came from sampling PSTATE.PAN in a kernel thread instead of at the fault: the recorded environment of the __bcopyout fault is SPSR_EL1 0x20400204 (bit 22 set) with SCTLR_EL1 0x3454593d (SPAN, bit 23, clear) and ID_AA64MMFR1_EL1 0x10212122, whose PAN field is 0b0010, PAN plus FEAT_PAN2. FEAT_PAN2 sets PSTATE.PAN on every exception entry to EL1 regardless of SCTLR_EL1.SPAN, and a kernel built with CONFIG_XNU_NATIVE_PAN=n never clears it, so every EL1 access to a user page raises a permission fault while the kernel stays healthy otherwise.",
-  "The mapping is present and the CPU walks the right page table: at the same fault TTBR0_EL1 equals the pmap root (both 0xa43f2800), pmap_find_phys resolves the page and AT S1E1W reports a valid translation, so the ESR 0x9600004f level-3 permission fault is neither a translation fault nor a stale-pmap symptom; AT is not subject to PAN, which is why it resolves an address the retried store still cannot touch.",
-  "The pid 1 kernel stack, dumped out of band by the heartbeat and symbolized against mach.development.bcm2837.unstripped, shows _bcopyout+0x38 under _load_init_program_at_path+0x6c under _bsdinit_task+0x74, which is the copyout of the launchd path.",
-  "The loop is not limited to the copyout: with the trust-cache bundle back in the payload the exec completes (execve activate 0, AMFI answers nothing) and the exec'd thread enters userland at pc 0x100924e50, where it takes 92 million instruction aborts in about a minute on three addresses (ESR 0x82000007, level-3 translation faults) without ever issuing a syscall or a single block read; those fetches belong to a thread running on a map the kernel's own copies could not finish filling while PAN was set.",
-  "Both loops have one root cause, not a pmap switch after the exec: every kernel copy to or from a user page after the first return to EL0 runs with PAN set and faults, which also explains why the faults appear only after the exec reaches userland in one build and inside the path copyout in another. CONFIG_XNU_NATIVE_PAN=y, the arch profile default this board had overridden, brackets the copyio with user_access_enable()/disable().",
-  "With CONFIG_XNU_NATIVE_PAN=y the exec completes and launchd runs: the ring shows init path copyout 0, init argv enter, init token enter, init execve enter, execve activate enter, execve activate 0, init execve returned 0 and init exec done, the exec'd thread starts at pc 0x1005dee50, pid 1 takes 120 faults instead of 92 million, and it enters 24 syscalls (getpid, proc_info, shared_region_check_np, ...) - the first userland progress this port has had. The remaining EL0 faults in the record are ordinary demand faults at 0x1005d8c38 and friends, resolved by vm_fault.",
-  "The ios-sweet port (iOS 16 on SM7150, boots to the home screen) solves the same problem without mounting a cryptex and without patching shared-region code: its image hard-links the SystemOS cryptex cache into /System/Library/Caches/com.apple.dyld/ on the one root volume, boots dyld with ignition_level=1 so libignition skips the preboot/cryptex stages and reads that system-volume path, and relaxes SIP through /chosen/asmb (lp-sip0=0x6f, lp-sip1=1) so vm_unix.c maps a root-owned cache that is in no trust cache. Its record also shows that shared_region_check_np returning the empty-region error is normal, that libignition lives in dyld and prints 'halt after stage: n/a' when ignition_halt_after is unset, and that the level-5 default is what tries 'preboot: mounting preboot' and fails with ENOTTY.",
-  "The IPSW says where the cache is: BuildManifest maps Cryptex1,SystemOS to 044-76034-038.dmg (3150 MiB, the SystemOS window) and OS to 044-76040-038.dmg (the 5.7 GiB OS window this port mounts), and a 7z listing of the cryptex dmg shows System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.03/.04/.32/.35/.50 plus the DriverKit cache. So the cache is in the cryptex, not in the mounted volume, and userland needs that volume mounted (or the root matched to it).",
-  "The mounted root is the OS window and it carries no dyld shared cache: vnode_lookup from the exec'd process's own root returns ENOENT (2) for /System/Library/Caches/com.apple.dyld/ and for dyld_shared_cache_arm64 and _arm64e, and for /System/Cryptexes/OS/, while /usr/lib/dyld and /sbin/launchd resolve (0). The task's shared region exists and vm_shared_region_start_address returns 1 (KERN_INVALID_ADDRESS, the empty-region case). launchd's dyld then writes the libignition banner (Darwin Ignition Sequence 1.0.0, ignition level 0x5, halt after stage: n/a) and stops, so the next fact to settle is where the cache lives: iPadOS 17 keeps it in the SystemOS cryptex window, which this boot does not mount.",
-  "The pid 1 trace of that boot shows the order: open /dev/null three times and /dev/console once (fds 0-3), one shared_region_check_np that fails, and then only writes and a couple of sysctls - no open of a dyld cache and no shared_region_map_and_slide_2_np. So dyld never reaches the point where it reads the cache: it asks whether a shared region is already mapped, the task answers with an empty one, and the image stops there. The kernel now prints whether that region exists and looks up the candidate cache paths from the exec'd process's own root.",
-  "The next stop is the dyld shared cache, not the kernel: launchd's shared_region_check_np reaches vm_shared_region_start_address() and fails (return 12, ENOMEM), launchd repeats the call every few seconds, and the eMMC read counter stays at 0x113, so no file is opened and no cache is read before the failure. The shared region has to be established before dyld can map it, which is the step other ports reach after their userland milestone.",
-  "Clearing PSTATE.PAN inside the fault handler does not help: the recovery path returns through the exception return, which restores SPSR_EL1 and sets PAN again, so the measured loop kept its 0.93 million faults per second and the PID 1 thread never left copyout.",
-  "The first CONFIG_XNU_NATIVE_PAN=y boot panicked with 'context switch with PAN disabled' at pcb.c because of this driver, not the kernel: its PAN report measured PSTATE.PAN = 4194304 (1 << 22, the bit in its PSTATE position) and then cleared it (pan after 0), and machine_switch_context panics when it finds PAN clear. The native PAN build needs PAN set in kernel context, so the report now only measures; a cleared PAN also explains why the value read back from a kernel thread in the PAN=n builds was 0.",
-  "A payload built without --trust-cache leaves the ring reporting no external trust caches found and AMFI kills launchd with namespace 9 (OS_REASON_EXEC) code 8; the same kernel with the bundle present reaches execve activate 0 without an exec-policy line, so that panic is a build-argument slip, not a regression.",
+  "PAN must be measured at the fault and never cleared from a probe: clearing it panics machine_switch_context, and measuring it in a kernel thread reads a stale zero.",
+  "A payload built without --trust-cache reports no external trust caches and AMFI kills launchd with namespace 9 / code 8; that is a packing slip, not a kernel regression.",
 ]
 completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",
 ]
 limits = [
-  "The CDC console delivers the console ring as it stood when the host attached; making the whole boot stream live is the remaining work.",
+  "The USB console hands over the ring as it stood at capture time, so a boot that hangs before the pump starts leaves only the panel.",
 ]
 next_action = [
   "Add the boot row and hash triple to every hardware result recorded here, and attach the captured console log rather than a photograph whenever one exists.",
-  "Give dyld a cache at the system-volume path and let the map pass: boot with ignition_level=1 (added) and launchd_unsecure_cache=1, then make /System/Library/Caches/com.apple.dyld exist on the mounted volume - either by matching the root to the SystemOS (cryptex) volume, which carries it, or by putting the cache files from that volume on the OS volume - and add /chosen/asmb (lp-sip0=0x6f, lp-sip1=1) so vm_unix.c accepts a root-owned cache outside the trust cache, as ios-sweet does. The first log line to watch is dyld's 'finding shared cache on system volume ... subpath = System/Library/Caches/com.apple.dyld/' and then the map result.",
-  "Decide how the dyld shared cache reaches userland. It is not on the mounted OS window, so either the SystemOS (cryptex) window is mounted where dyld looks (/System/Cryptexes/OS) or the cache is supplied another way the port can read; the v41 entry of the fuxi-mouse233 record (SYS_shared_region_map_and_slide_2_np returning 0) is the reference for a kernel-side answer. Check first whether the SystemOS window carries an APFS volume with the cache before changing the root match.",
-  "Keep the PAN values in the fault record: with the native PAN build the EL0 entries show SPSR_EL1 0x0 (user context) and the kernel entries 0x20000204, so a future fault that is not a plain demand fault can be read without another build.",
+  "Read the systemos-union boot: the mount table, NEMMC systemos device, sirius: systemos mount <errno> and the per-path probe errnos say whether the cache reached the root mount; EBUSY means the volume is already mounted elsewhere and its mount point has to be used.",
 ]
 evidence = [
   { kind = "source", reference = "docs/HANDOFF.zh-CN.md", result = "Entry probe, panic screen, panel rows and the evidence convention of the port." },
   { kind = "device", reference = "docs/evidence/sirius-usb-console-20261026-1605.log", command = "sudo python3 scripts/capture-usb-console.py --wait 60 --duration 190 --output /tmp/boot.log", revision = "366abe2948fdb0c1554f7e0b89b731160f4527a4", result = "3813 bytes of kernel log read from /dev/ttyACM0 over the DWC3 CDC console." },
-  { kind = "device", reference = "docs/evidence/sirius-pan-fault-20261027-2106.log", command = "sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-pan1.log --wait 240 --duration 420", revision = "9df9148c7e9c64ee0c9b0cd1e0caa4e0b8a2a4b6", result = "The fault environment of the pid 1 thread: SPSR_EL1 0x20400204 (PAN set), SCTLR_EL1 0x3454593d (SPAN clear), ID_AA64MMFR1_EL1 0x10212122 (PAN 0b0010), TTBR0_EL1 equal to pmap->ttep 0xa43f2800, ESR 0x9600004f at _bcopyout+0x38 with about 0.93 million faults per second and pid 1 still in the path copyout." },
-  { kind = "device", reference = "docs/evidence/sirius-dyld-cache-absent-20261027-2155.log", command = "fastboot flash vendor /tmp/sirius-p1.img; fastboot erase misc; fastboot reboot; sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-p1.log --wait 240 --duration 200", revision = "60f87f0e1b5c11c1df13f324372ade20ac89e45f", result = "The path lookups from the exec'd process root: com.apple.dyld and both arm64/arm64e caches ENOENT, /System/Cryptexes/OS ENOENT, /usr/lib/dyld and /sbin/launchd 0; the task's shared region exists with kr 1; launchd writes the libignition banner and halts. Kernel sha256 8091fb20f0613d82a34df6467f05a4df6d8107dbd758e2a48753ff867f42c41d." },
-  { kind = "device", reference = "docs/evidence/sirius-exec-after-pan-20261027-2125.log", command = "fastboot flash vendor /tmp/sirius-pan3.img; fastboot erase misc; fastboot reboot; sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-pan3.log --wait 240 --duration 300", revision = "1b0109345881868736e7452384da8521ffaebf33", result = "The exec with CONFIG_XNU_NATIVE_PAN=y: init path copyout 0, argv/token enter, execve activate 0, init execve returned 0, init exec done, launchd thread at pc 0x1005dee50, 120 pid 1 faults and 24 syscalls, then shared_region_check_np failing in vm_shared_region_start_address() with the eMMC read counter frozen at 0x113. Kernel sha256 3a34007b8f31adf7b26a3e8419ff8728708d8242bbbfe8fb338ec5ca50ee73e4." },
-]
-
-[[area]]
-id = "boot-chain"
-status = "implemented"
-components = []
-paths = [".gitmodules", "uboot/**", "efi/**"]
-inputs = [
-  "Boot chain: ABL -> U-Boot (boot partition) -> UEFI -> UniXNU.efi on the vendor partition -> DarwinBoot.efi -> XNU.",
-  "The U-Boot fork github.com/57UU/u-boot branch sirius/v2.0 carries the board support for sdm710-xiaomi-sirius and sirius-build.sh's ENV_FILE option; the UniXNU boot chain itself is environment text, not source.",
-  "The EDK II package that builds UniXNU.efi, the DXE drivers and DarwinBoot comes from the UniXNU framework's package/ directory.",
-]
-configuration = [
-  "uboot/src is a submodule of that fork at branch sirius/v2.0 (shallow), pinned to a2a847b1a84.",
-  "uboot/unixnu-sirius.env is the board's stock default environment plus unixnu_boot/unixnu_check, the bootmenu entry they need and the bootcmd chain; uboot/build.sh builds boot-unixnu.img from the submodule and that file.",
-  "efi/ is a vendored copy of the framework's package/ (UniXNUPkg, Scripts, build.sh) taken at f85b5a6, so the repository can build the whole chain on its own.",
-]
-procedure = [
-  "U-Boot: git submodule update --init --depth 1 uboot/src, then uboot/build.sh (needs CROSS_COMPILE and mkbootimg); fastboot flash boot uboot/boot-unixnu.img.",
-  "Payload: assemble the kernel, efi/ and the EDK II build output with scripts/make-uboot-payload.py --marker, then fastboot flash vendor.",
-  "Recovery: flash sirius-distro's build/boot.img, which ignores the marker and boots Linux.",
-]
-findings = [
-  "U-Boot needs no source change for this port: with the environment file above, bootcmd runs unixnu_check first and falls back to the Linux path when /EFI/UniXNU/BOOTUNIXNU is absent on p80.",
-  "mmc 0:50 is a hexadecimal partition number (0x50 = 80 = the vendor partition); 0:80 is read as 0x80 = 128 and fails with 'Invalid partition 128'.",
-  "bootflow scan cannot find p80: it stops after the first 30 partitions of each device, so the boot chain uses load/bootefi with the partition spelled out.",
-  "The UniXNU boot chain used to live only in an unversioned scratch directory (the environment file and boot-unixnu.img), so the boot image could not be rebuilt from any repository; both the file and the recipe are in uboot/ now.",
-  "U-Boot's fastboot gadget answers the whole getvar dialogue but flashing the vendor partition hangs; the repeated 'request ... was not queued to ep1in-bulk' line is fastboot_tx_write() cancelling the IN request before every queue, a dequeue miss rather than a rejected transfer, and stock 2026.07 never received the modern dwc3 ENDTRANSFER/dequeue rework, so that cancel can strand a TRB the controller still owns. Removing the dequeue is the candidate fix.",
-  "Writing the BCB command 'uboot-fastboot' before booting UniXNU does bring the next start into U-Boot's own fastboot on the phone, so entering it is solved while flashing from it is not; the PMIC spare ABL actually reads (PON_SOFT_RB_SPARE, 0x88f = 0x04 in U-Boot's PID/offset encoding) still needs CONFIG_CMD_PMIC and a verified pmic device name.",
-  "U-Boot's fastboot reports slot a, so the host appends _a to every partition name it flashes; fastboot_partition_alias_<name>_a=<name> in the environment maps both spellings onto the real GPT names.",
-]
-completion = [
-  "uboot/build.sh reproduces boot-unixnu.img from a fresh clone; with the marker in the payload U-Boot starts UniXNU.efi, and without it the phone boots Linux.",
-  "The payload volume holds UniXNU.efi, DarwinBoot.efi, kernel.macho, kernel.macho.trustcache and the marker.",
-]
-limits = [
-  "The EDK II package is a copy, not a submodule: keeping it in step with the framework is a manual diff of package/.",
-  "The U-Boot submodule is shallow and pinned by commit; rebasing onto a newer sirius/v2.0 is a deliberate update.",
-]
-next_action = [
-  "Test the f_fastboot dequeue removal end to end: after a power cycle, flash boot from U-Boot's own fastboot and, if that works, arm the BCB before booting UniXNU so a hung run comes back to a usable fastboot without the chord.",
-  "Build UniXNU.efi from efi/ once and compare it with the framework's output, so the vendored copy is known good rather than assumed.",
-]
-evidence = [
-  { kind = "source", reference = "uboot/README.md", result = "The build recipe, the four environment lines that add the UniXNU chain, and the two partition/short-scan traps." },
-  { kind = "source", reference = "efi/README.md", result = "Provenance of the vendored EDK II package (framework commit f85b5a6) and what the payload takes from it." },
+  { kind = "device", reference = "docs/evidence/sirius-pan-fault-20261027-2106.log", command = "sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-pan1.log --wait 240 --duration 420", revision = "9df9148c7e9c64ee0c9b0cd1e0caa4e0b8a2a4b6", result = "The fault environment of the pid 1 thread: SPSR_EL1 0x20400204 (PAN set), SCTLR_EL1 0x3454593d (SPAN clear), ID_AA64MMFR1_EL1 0x10212122 (PAN 0b0010), TTBR0_EL1 equal to pmap->ttep 0xa43f2800, ESR 0x9600004f at _bcopyout+0x38." },
+  { kind = "device", reference = "docs/evidence/sirius-exec-after-pan-20261027-2125.log", command = "fastboot flash vendor /tmp/sirius-pan3.img; fastboot erase misc; fastboot reboot; sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-pan3.log --wait 240 --duration 300", revision = "1b0109345881868736e7452384da8521ffaebf33", result = "The exec with CONFIG_XNU_NATIVE_PAN=y: execve activate 0, init execve returned 0, launchd thread at pc 0x1005dee50, 122 pid 1 faults and 24 syscalls. Kernel sha256 3a34007b8f31adf7b26a3e8419ff8728708d8242bbbfe8fb338ec5ca50ee73e4." },
+  { kind = "device", reference = "docs/evidence/sirius-dyld-cache-absent-20261027-2155.log", command = "fastboot flash vendor /tmp/sirius-p1.img; fastboot erase misc; fastboot reboot; sudo python3 scripts/capture-usb-console.py --follow --output /tmp/boot-p1.log --wait 240 --duration 200", revision = "60f87f0e1b5c11c1df13f324372ade20ac89e45f", result = "The path lookups from the exec'd process root: com.apple.dyld and both arm64/arm64e caches ENOENT, /System/Cryptexes/OS ENOENT, /usr/lib/dyld and /sbin/launchd 0. Kernel sha256 8091fb20f0613d82a34df6467f05a4df6d8107dbd758e2a48753ff867f42c41d." },
+  { kind = "device", reference = "docs/evidence/sirius-launchd-stop-20261028-1350.log", command = "sudo python3 scripts/capture-usb-console.py --port /dev/ttyACM0 --duration 20 --output .scratch/console-now.log", revision = "c29986f98a909121db5471059ee4dd458321aab1", result = "The launchd stop of the pre-union kernel: disk2s1 mounts the OS volume, AMFI latches its PMGR, execve returns 0, launchd issues 24 syscalls, and the cache lookups are ENOENT while /usr/lib/dyld and /sbin/launchd resolve 0; shared_region_check_np returns 12 (the empty region, which is normal). Kernel sha256 8091fb20f0613d82a34df6467f05a4df6d8107dbd758e2a48753ff867f42c41d." },
 ]
